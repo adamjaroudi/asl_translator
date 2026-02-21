@@ -1,0 +1,9 @@
+# create this file as .gitignore in your project root
+node_modules/
+model/asl_classifier.pkl
+model/hand_landmarker.task
+data/
+downloads/
+__pycache__/
+*.pyc
+.env

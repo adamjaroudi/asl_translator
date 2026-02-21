@@ -40,16 +40,18 @@ function useWebSocket(url, onMessage) {
   return { connected, connect, disconnect, send };
 }
 
-export default function ASLTranslator() {
+export default function ASLTranslator({ onNavigate }) {
   const [data, setData] = useState({
     frame: null, prediction: "", confidence: 0,
     isWord: false, sentence: "", numHands: 0, stablePct: 0, fps: 0,
+    topAlts: [],
   });
   const [active, setActive] = useState(false);
   const [history, setHistory] = useState([]);
   const [speaking, setSpeaking] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [showDict, setShowDict] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const onMessage = useCallback((msg) => {
     if (msg.error) return;
@@ -69,6 +71,7 @@ export default function ASLTranslator() {
         numHands:   msg.num_hands  ?? 0,
         stablePct:  msg.stable_pct ?? 0,
         fps:        msg.fps        ?? prev.fps,
+        topAlts:    msg.top_alts   ?? prev.topAlts,
       };
     });
   }, []);
@@ -125,6 +128,12 @@ export default function ASLTranslator() {
             History{history.length > 0 ? ` (${history.length})` : ""}
           </button>
           <button style={s.headerNavBtn}>Settings</button>
+          {onNavigate && (
+            <button style={{ ...s.headerNavBtn, borderColor: "#1a1a1a", fontWeight: 600 }}
+              onClick={() => onNavigate("collect")}>
+              Collect Data →
+            </button>
+          )}
           {active && (
             <span style={s.fpsTag}>{data.fps > 0 ? `${data.fps} fps` : "—"}</span>
           )}
@@ -169,7 +178,18 @@ export default function ASLTranslator() {
 
           {/* Translation column */}
           <div style={s.translationCol}>
-            <div style={s.sectionLabel}>Translation</div>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div style={s.sectionLabel}>Translation</div>
+              <label style={s.advancedToggle}>
+                <input
+                  type="checkbox"
+                  checked={showAdvanced}
+                  onChange={e => setShowAdvanced(e.target.checked)}
+                  style={{ marginRight: 6, accentColor: "#1a1a1a" }}
+                />
+                Advanced
+              </label>
+            </div>
             <div style={s.translationBox}>
               <div style={s.translationText}>
                 {data.prediction
@@ -193,6 +213,33 @@ export default function ASLTranslator() {
                 </span>
               </div>
             )}
+
+            {/* Advanced: top alternatives */}
+            {showAdvanced && data.topAlts && data.topAlts.length > 0 && (
+              <div style={s.altsPanel}>
+                <div style={s.altsPanelTitle}>Also detecting</div>
+                {data.topAlts.map(([label, conf], i) => {
+                  const pct = Math.round(conf * 100);
+                  const isTop = i === 0;
+                  return (
+                    <div key={label} style={s.altRow}>
+                      <span style={{ ...s.altLabel, fontWeight: isTop ? 600 : 400, color: isTop ? C.text : C.textMid }}>
+                        {label}
+                      </span>
+                      <div style={s.altBarWrap}>
+                        <div style={{
+                          ...s.altBar,
+                          width: `${pct}%`,
+                          background: isTop ? "#1a1a1a" : "#c8c8c4",
+                        }} />
+                      </div>
+                      <span style={{ ...s.altPct, color: isTop ? C.text : C.textDim }}>{pct}%</span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
             <button
               style={{ ...s.btn, ...s.btnSecondary, marginTop: "auto" }}
               onClick={handleSpeak}
@@ -467,6 +514,30 @@ const s = {
   },
   confBar: { height: "100%", transition: "width 0.2s ease" },
   confNum: { fontSize: 13, fontFamily: "'IBM Plex Mono', monospace", fontWeight: 500, minWidth: 36, textAlign: "right" },
+
+  // Advanced alternatives panel
+  advancedToggle: {
+    display: "flex", alignItems: "center", fontSize: 12,
+    fontWeight: 500, color: C.textMid, cursor: "pointer",
+    userSelect: "none",
+  },
+  altsPanel: {
+    border: `1px solid ${C.border}`,
+    padding: "10px 12px",
+    background: "#fafaf8",
+    display: "flex",
+    flexDirection: "column",
+    gap: 7,
+  },
+  altsPanelTitle: {
+    fontSize: 10, fontWeight: 600, letterSpacing: "0.1em",
+    textTransform: "uppercase", color: C.textDim, marginBottom: 2,
+  },
+  altRow: { display: "flex", alignItems: "center", gap: 8 },
+  altLabel: { fontSize: 13, minWidth: 68, fontFamily: "'IBM Plex Mono', monospace" },
+  altBarWrap: { flex: 1, height: 5, background: "#e5e5e0", overflow: "hidden" },
+  altBar: { height: "100%", transition: "width 0.15s ease" },
+  altPct: { fontSize: 12, fontFamily: "'IBM Plex Mono', monospace", minWidth: 32, textAlign: "right" },
 
   // Bottom row
   bottomRow: {
