@@ -133,18 +133,24 @@ export default function ASLTranslator({ onNavigate }) {
       {/* ── Header ── */}
       <header style={s.header}>
         <div style={s.headerLeft}>
-          <span style={s.headerLogo}>🤟</span>
+          <span style={s.headerLogo}></span>
           <span style={s.headerTitle}>ASL Translator</span>
         </div>
         <nav style={s.headerNav}>
           {onNavigate && (
             <button style={s.headerNavBtn} onClick={() => onNavigate("home")}>← Home</button>
           )}
-          <button style={s.headerNavBtn} onClick={() => setShowDict(true)}>Dictionary</button>
+          <button style={s.headerNavBtn} onClick={() => onNavigate ? onNavigate("dictionary") : setShowDict(true)}>Dictionary</button>
           <button style={s.headerNavBtn} onClick={() => setShowHistory(true)}>
             History{history.length > 0 ? ` (${history.length})` : ""}
           </button>
           <button style={s.headerNavBtn}>Settings</button>
+          {onNavigate && (
+            <button style={{ ...s.headerNavBtn, borderColor: "#1a1a1a", fontWeight: 600 }}
+              onClick={() => onNavigate("collect")}>
+              Collect Data →
+            </button>
+          )}
           <button
             style={{ ...s.headerNavBtn, ...(restarting ? { color: "#b45309", borderColor: "#fcd34d" } : {}) }}
             onClick={handleRestart}
