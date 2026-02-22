@@ -328,7 +328,7 @@ async def collector_handler(websocket):
     fps_timer = time.time()
 
     async def listen():
-        nonlocal recording, current_label, session_count
+        nonlocal recording, current_label, session_count, existing_rows, new_samples, class_stats
         async for msg in websocket:
             try:
                 cmd = json.loads(msg)
@@ -359,6 +359,67 @@ async def collector_handler(websocket):
                         "path":  DATA_FILE,
                         "total_samples": total,
                     }))
+
+                elif action == "trim":
+                    keep = cmd.get("keep", 100)
+                    # Read current file
+                    if os.path.exists(DATA_FILE):
+                        with open(DATA_FILE, "r") as f:
+                            all_rows = list(csv.reader(f))
+                        header_row = all_rows[:1]
+                        data_rows  = all_rows[1:]
+                        trimmed    = header_row + data_rows[:keep]
+                        with open(DATA_FILE, "w", newline="") as f:
+                            csv.writer(f).writerows(trimmed)
+                        kept = len(trimmed) - 1
+                        # Reset in-memory state
+                        existing_rows = trimmed
+                        new_samples   = []
+                        class_stats   = {}
+                        for row in data_rows[:keep]:
+                            if row:
+                                class_stats[row[0]] = class_stats.get(row[0], 0) + 1
+                        print(f"[collector] Trimmed CSV to {kept} rows")
+                        await websocket.send(json.dumps({
+                            "saved": 0,
+                            "path":  DATA_FILE,
+                            "total_samples": kept,
+                            "class_stats": class_stats,
+                        }))
+
+                elif action == "train":
+                    print("[collector] Starting model training...")
+                    await websocket.send(json.dumps({"train_start": True}))
+
+                    import subprocess, sys
+                    proc = await asyncio.create_subprocess_exec(
+                        sys.executable, "train_model.py",
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.STDOUT,
+                    )
+
+                    async def stream_output():
+                        while True:
+                            line = await proc.stdout.readline()
+                            if not line:
+                                break
+                            text = line.decode("utf-8", errors="replace").rstrip()
+                            print(f"[train] {text}")
+                            try:
+                                await websocket.send(json.dumps({"train_log": text}))
+                            except Exception:
+                                break
+                        await proc.wait()
+                        print(f"[collector] Training finished (exit {proc.returncode})")
+                        try:
+                            await websocket.send(json.dumps({
+                                "train_done": True,
+                                "train_log": f"--- Done (exit code {proc.returncode}) ---",
+                            }))
+                        except Exception:
+                            pass
+
+                    asyncio.ensure_future(stream_output())
 
             except Exception as ex:
                 print(f"[collector] Command error: {ex}")
@@ -424,14 +485,36 @@ async def collector_handler(websocket):
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
+def restart_server():
+    """Spawn a fresh server process and exit this one."""
+    import subprocess, sys
+    print("[server] Restarting...")
+    subprocess.Popen([sys.executable] + sys.argv)
+    os._exit(0)
+
+
 async def main():
     print("ASL server starting…")
     print("  Translator : ws://localhost:8765")
     print("  Collector  : ws://localhost:8766")
+    print("  Restart    : ws://localhost:8767")
+
+    async def restart_handler(websocket):
+        async for msg in websocket:
+            try:
+                cmd = json.loads(msg)
+                if cmd.get("action") == "restart":
+                    await websocket.send(json.dumps({"restarting": True}))
+                    await asyncio.sleep(0.2)
+                    loop = asyncio.get_event_loop()
+                    loop.call_later(0.1, restart_server)
+            except Exception:
+                pass
 
     async with (
         websockets.serve(translator_handler, "localhost", 8765),
         websockets.serve(collector_handler,  "localhost", 8766),
+        websockets.serve(restart_handler,    "localhost", 8767),
     ):
         await asyncio.Future()
 

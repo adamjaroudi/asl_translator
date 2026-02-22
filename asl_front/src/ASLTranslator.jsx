@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 
-const WS_URL = "ws://localhost:8765";
+const WS_URL     = "ws://localhost:8765";
+const RESTART_URL = "ws://localhost:8767";
 const CONFIDENCE_THRESHOLD = 0.6;
 
 const SIGN_EMOJI = {
@@ -52,6 +53,19 @@ export default function ASLTranslator({ onNavigate }) {
   const [showHistory, setShowHistory] = useState(false);
   const [showDict, setShowDict] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [restarting, setRestarting]     = useState(false);
+
+  const handleRestart = useCallback(() => {
+    setRestarting(true);
+    const ws = new WebSocket(RESTART_URL);
+    ws.onopen = () => ws.send(JSON.stringify({ action: "restart" }));
+    ws.onmessage = () => {
+      ws.close();
+      // Reconnect after 2.5s to give server time to restart
+      setTimeout(() => setRestarting(false), 2500);
+    };
+    ws.onerror = () => setRestarting(false);
+  }, []);
 
   const onMessage = useCallback((msg) => {
     if (msg.error) return;
@@ -123,17 +137,22 @@ export default function ASLTranslator({ onNavigate }) {
           <span style={s.headerTitle}>ASL Translator</span>
         </div>
         <nav style={s.headerNav}>
+          {onNavigate && (
+            <button style={s.headerNavBtn} onClick={() => onNavigate("home")}>← Home</button>
+          )}
           <button style={s.headerNavBtn} onClick={() => setShowDict(true)}>Dictionary</button>
           <button style={s.headerNavBtn} onClick={() => setShowHistory(true)}>
             History{history.length > 0 ? ` (${history.length})` : ""}
           </button>
           <button style={s.headerNavBtn}>Settings</button>
-          {onNavigate && (
-            <button style={{ ...s.headerNavBtn, borderColor: "#1a1a1a", fontWeight: 600 }}
-              onClick={() => onNavigate("collect")}>
-              Collect Data →
-            </button>
-          )}
+          <button
+            style={{ ...s.headerNavBtn, ...(restarting ? { color: "#b45309", borderColor: "#fcd34d" } : {}) }}
+            onClick={handleRestart}
+            disabled={restarting}
+            title="Restart the Python server to load a newly trained model"
+          >
+            {restarting ? "↺ Restarting…" : "↺ Restart Server"}
+          </button>
           {active && (
             <span style={s.fpsTag}>{data.fps > 0 ? `${data.fps} fps` : "—"}</span>
           )}
@@ -259,7 +278,7 @@ export default function ASLTranslator({ onNavigate }) {
             <div style={s.detectedRow}>
               <span style={s.detectedEmoji}>{data.prediction ? (signEmoji || "—") : "—"}</span>
               <div style={s.detectedRight}>
-                <div style={s.detectedName}>{data.prediction || "None"}</div>
+                <div style={s.detectedName}>{data.prediction || "Waiting for sign…"}</div>
                 {data.prediction && (
                   <div style={s.holdRow}>
                     <div style={s.holdTrack}>
