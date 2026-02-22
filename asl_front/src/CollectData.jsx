@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 
-const WS_URL = "ws://localhost:8766"; // separate port from translator
+const WS_URL      = "ws://localhost:8766";
+const RESTART_URL = "ws://localhost:8767";
 
 const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
@@ -49,7 +50,21 @@ export default function CollectData({ onNavigate }) {
   const [active, setActive]         = useState(false);
   const [fps, setFps]               = useState(0);
   const [tab, setTab]               = useState("letters"); // "letters" | "words"
-  const [saveMsg, setSaveMsg]       = useState("");
+  const [saveMsg, setSaveMsg]         = useState("");
+  const [confirmTrim, setConfirmTrim]   = useState(false);
+  const [training, setTraining]         = useState(false);
+  const [trainLog, setTrainLog]         = useState([]);
+  const [showTrainLog, setShowTrainLog] = useState(false);
+  const [restarting, setRestarting]     = useState(false);
+  const trainLogRef = useRef(null);
+
+  const handleRestart = useCallback(() => {
+    setRestarting(true);
+    const ws = new WebSocket(RESTART_URL);
+    ws.onopen    = () => ws.send(JSON.stringify({ action: "restart" }));
+    ws.onmessage = () => { ws.close(); setTimeout(() => setRestarting(false), 2500); };
+    ws.onerror   = () => setRestarting(false);
+  }, []);
 
   const onMessage = useCallback((msg) => {
     if (msg.frame)        setFrame(msg.frame);
@@ -62,6 +77,16 @@ export default function CollectData({ onNavigate }) {
       setSaveMsg(`Saved ${msg.saved} samples to ${msg.path}`);
       setTimeout(() => setSaveMsg(""), 3000);
     }
+    if (msg.train_log) {
+      setTrainLog(prev => [...prev, msg.train_log]);
+      setShowTrainLog(true);
+      setTimeout(() => {
+        if (trainLogRef.current)
+          trainLogRef.current.scrollTop = trainLogRef.current.scrollHeight;
+      }, 30);
+    }
+    if (msg.train_start) { setTraining(true); setTrainLog([]); setShowTrainLog(true); }
+    if (msg.train_done)  { setTraining(false); }
   }, []);
 
   const { connected, connect, disconnect, send } = useWebSocket(WS_URL, onMessage);
@@ -98,6 +123,17 @@ export default function CollectData({ onNavigate }) {
     send({ action: "save" });
   };
 
+  const handleTrim = () => {
+    if (!connected) return;
+    send({ action: "trim", keep: 100 });
+    setConfirmTrim(false);
+  };
+
+  const handleTrain = () => {
+    if (!connected || training) return;
+    send({ action: "train" });
+  };
+
   const samplesForLabel = (label) => classStats[label] || 0;
   const totalForLabel   = (label) => samplesForLabel(label);
   const TARGET = 200;
@@ -124,6 +160,14 @@ export default function CollectData({ onNavigate }) {
           {active && <span style={s.fpsTag}>{fps > 0 ? `${fps} fps` : "—"}</span>}
           <span style={{ ...s.statusDot, background: connected ? "#2e7d32" : "#9e9e9e" }} />
           <span style={s.statusText}>{connected ? "Connected" : "Disconnected"}</span>
+          <button
+            style={{ ...s.btn, ...(restarting ? { color: "#b45309", borderColor: "#fcd34d" } : {}) }}
+            onClick={handleRestart}
+            disabled={restarting}
+            title="Restart server to load newly trained model"
+          >
+            {restarting ? "↺ Restarting…" : "↺ Restart Server"}
+          </button>
           <button style={{ ...s.btn, ...s.btnPrimary }} onClick={handleToggle}>
             {active ? "Stop Camera" : "Start Camera"}
           </button>
@@ -199,8 +243,55 @@ export default function CollectData({ onNavigate }) {
               <button style={{ ...s.btn, ...s.btnPrimary, flex: 1 }} onClick={handleSave} disabled={!connected || totalSamples === 0}>
                 Save to CSV
               </button>
+              {!confirmTrim
+                ? <button
+                    style={{ ...s.btn, color: "#b91c1c", borderColor: "#fca5a5" }}
+                    onClick={() => setConfirmTrim(true)}
+                    disabled={!connected || totalSamples <= 100}
+                    title="Keep only first 100 rows of CSV"
+                  >
+                    Trim CSV
+                  </button>
+                : <div style={s.confirmRow}>
+                    <span style={s.confirmText}>Keep only first 100 rows?</span>
+                    <button style={{ ...s.btn, background: "#b91c1c", color: "#fff", border: "1px solid #b91c1c" }} onClick={handleTrim}>
+                      Yes, trim
+                    </button>
+                    <button style={s.btn} onClick={() => setConfirmTrim(false)}>Cancel</button>
+                  </div>
+              }
             </div>
             {saveMsg && <div style={s.saveMsg}>{saveMsg}</div>}
+
+            {/* Train model */}
+            <div style={s.divider} />
+            <button
+              style={{ ...s.btn, ...s.btnPrimary, ...(training ? { opacity: 0.7 } : {}) }}
+              onClick={handleTrain}
+              disabled={!connected || training || totalSamples === 0}
+            >
+              {training ? "⏳ Training…" : "▶ Train Model"}
+            </button>
+            {training && (
+              <div style={s.trainingNote}>
+                Training in progress — this takes a few minutes. Do not close the server.
+              </div>
+            )}
+            {showTrainLog && trainLog.length > 0 && (
+              <div style={s.trainLogWrap}>
+                <div style={s.trainLogHeader}>
+                  <span style={s.trainLogTitle}>
+                    {training ? "Training output" : "Training complete ✓"}
+                  </span>
+                  <button style={s.trainLogClose} onClick={() => setShowTrainLog(false)}>✕</button>
+                </div>
+                <div style={s.trainLog} ref={trainLogRef}>
+                  {trainLog.map((line, i) => (
+                    <div key={i} style={s.trainLogLine}>{line}</div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Tips */}
@@ -386,10 +477,36 @@ const s = {
   statNum: { fontSize: 22, fontWeight: 600, fontFamily: "'IBM Plex Mono', monospace", color: C.text },
   statLabel: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.06em" },
   saveBtnRow: { display: "flex", gap: 8 },
+  confirmRow: { display: "flex", alignItems: "center", gap: 6, flex: 1, flexWrap: "wrap" },
+  confirmText: { fontSize: 12, color: "#b91c1c", fontWeight: 500, flex: 1 },
   saveMsg: {
     fontSize: 12, color: "#2e7d32", padding: "6px 10px",
     background: "#e8f5e9", border: "1px solid #a5d6a7",
   },
+  divider: { borderTop: `1px solid ${C.border}` },
+  trainingNote: {
+    fontSize: 12, color: "#b45309", padding: "6px 10px",
+    background: "#fffbeb", border: "1px solid #fcd34d",
+  },
+  trainLogWrap: {
+    border: `1px solid ${C.border}`,
+    overflow: "hidden",
+  },
+  trainLogHeader: {
+    display: "flex", justifyContent: "space-between", alignItems: "center",
+    padding: "7px 10px", background: "#f0f0eb", borderBottom: `1px solid ${C.border}`,
+  },
+  trainLogTitle: { fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", color: C.textMid },
+  trainLogClose: {
+    background: "none", border: "none", fontSize: 13,
+    color: C.textDim, cursor: "pointer", padding: "0 2px",
+  },
+  trainLog: {
+    maxHeight: 180, overflowY: "auto", padding: "8px 10px",
+    background: "#1a1a1a", fontFamily: "'IBM Plex Mono', monospace",
+    fontSize: 11, lineHeight: 1.6,
+  },
+  trainLogLine: { color: "#d4d4d0", whiteSpace: "pre-wrap", wordBreak: "break-all" },
 
   tipsBox: {
     border: `1px solid ${C.border}`,
@@ -404,13 +521,13 @@ const s = {
   rightCol: { display: "flex", flexDirection: "column", gap: 0 },
   tabs: {
     display: "flex",
-    borderBottom: `1px solid ${C.border}`,
+    borderBottomWidth: 1, borderBottomStyle: "solid", borderBottomColor: C.border,
     marginBottom: 14,
   },
   tabBtn: {
     padding: "9px 18px", background: "none", border: "none",
-    borderBottom: "2px solid transparent", fontSize: 13, fontWeight: 500,
-    color: C.textMid, marginBottom: -1,
+    borderBottomWidth: 2, borderBottomStyle: "solid", borderBottomColor: "transparent",
+    fontSize: 13, fontWeight: 500, color: C.textMid, marginBottom: -1,
   },
   tabBtnActive: { borderBottomColor: "#1a1a1a", color: C.text, fontWeight: 600 },
 
