@@ -133,11 +133,11 @@ export default function ASLTranslator({ onNavigate }) {
       {/* ── Header ── */}
       <header style={s.header}>
         <div style={s.headerLeft}>
-          <span style={s.headerLogo}>🤟</span>
+          <span style={s.headerLogo}></span>
           <span style={s.headerTitle}>ASL Translator</span>
         </div>
         <nav style={s.headerNav}>
-          <button style={s.headerNavBtn} onClick={() => setShowDict(true)}>Dictionary</button>
+          <button style={s.headerNavBtn} onClick={() => onNavigate ? onNavigate("dictionary") : setShowDict(true)}>Dictionary</button>
           <button style={s.headerNavBtn} onClick={() => setShowHistory(true)}>
             History{history.length > 0 ? ` (${history.length})` : ""}
           </button>
