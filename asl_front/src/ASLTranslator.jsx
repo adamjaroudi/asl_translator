@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 
-const WS_URL = "ws://localhost:8765";
+const WS_URL     = "ws://localhost:8765";
+const RESTART_URL = "ws://localhost:8767";
 const CONFIDENCE_THRESHOLD = 0.6;
 
 const SIGN_EMOJI = {
@@ -52,6 +53,19 @@ export default function ASLTranslator({ onNavigate }) {
   const [showHistory, setShowHistory] = useState(false);
   const [showDict, setShowDict] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [restarting, setRestarting]     = useState(false);
+
+  const handleRestart = useCallback(() => {
+    setRestarting(true);
+    const ws = new WebSocket(RESTART_URL);
+    ws.onopen = () => ws.send(JSON.stringify({ action: "restart" }));
+    ws.onmessage = () => {
+      ws.close();
+      // Reconnect after 2.5s to give server time to restart
+      setTimeout(() => setRestarting(false), 2500);
+    };
+    ws.onerror = () => setRestarting(false);
+  }, []);
 
   const onMessage = useCallback((msg) => {
     if (msg.error) return;
@@ -134,6 +148,14 @@ export default function ASLTranslator({ onNavigate }) {
               Collect Data →
             </button>
           )}
+          <button
+            style={{ ...s.headerNavBtn, ...(restarting ? { color: "#b45309", borderColor: "#fcd34d" } : {}) }}
+            onClick={handleRestart}
+            disabled={restarting}
+            title="Restart the Python server to load a newly trained model"
+          >
+            {restarting ? "↺ Restarting…" : "↺ Restart Server"}
+          </button>
           {active && (
             <span style={s.fpsTag}>{data.fps > 0 ? `${data.fps} fps` : "—"}</span>
           )}
