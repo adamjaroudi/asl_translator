@@ -26,6 +26,7 @@ import numpy as np
 import websockets
 
 from features import engineer_features_from_raw
+from camera_util import open_camera as open_camera_impl
 
 MODEL_FILE  = os.path.join("model", "asl_classifier.pkl")
 HAND_MODEL  = os.path.join("model", "hand_landmarker.task")
@@ -138,8 +139,8 @@ def sentence_token(label):
 
 
 def open_camera():
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
+    cap, ok = open_camera_impl(0)
+    if not ok or cap is None:
         return None
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  960)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
