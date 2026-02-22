@@ -8,9 +8,10 @@ Usage:
 Controls:
     A-Z        Start recording that letter sign
     0-9        Start recording word sign (page 1)
-    F1-F10     Start recording word sign (page 2) — use - and = keys
     SPACE      Stop recording
+    BACKSPACE  Remove last sign from this session (e.g. delete bad "E" before saving)
     ESC        Quit and save
+    Q          Quit without saving
 
 Number keys:  1=I-LOVE-YOU  2=GOOD  3=MORE  4=HELP  5=BOOK
               6=STOP  7=PLAY  8=WANT  9=WITH  0=SAME
@@ -18,11 +19,14 @@ Extra keys:   -=NO  ==YES  [=FRIEND  ]=WORK  ;=FINISH
               '=GO  ,=SIT  .=BIG  /=SMALL  \\=LOVE  `=EAT  TAB=DRINK
 """
 
+import argparse
 import os
 import csv
 import cv2
 import mediapipe as mp
 import numpy as np
+
+from camera_util import open_camera
 
 DATA_DIR = "data"
 DATA_FILE = os.path.join(DATA_DIR, "landmarks.csv")
@@ -121,6 +125,10 @@ def make_header():
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Collect ASL hand data from webcam.")
+    parser.add_argument("--camera", type=int, default=None, help="Camera index (0, 1, 2...). Or set CAMERA_INDEX env.")
+    args = parser.parse_args()
+
     os.makedirs(DATA_DIR, exist_ok=True)
 
     if not os.path.exists(HAND_MODEL):
@@ -141,9 +149,9 @@ def main():
             existing_rows = list(reader)
         print(f"Loaded {len(existing_rows) - 1} existing samples.")
 
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("Error: Cannot open webcam.")
+    cap, ok = open_camera(args.camera)
+    if not ok or cap is None:
+        print("Error: Cannot open webcam. Check Windows Settings → Privacy → Camera.")
         return
 
     options = mp.tasks.vision.HandLandmarkerOptions(
@@ -159,18 +167,18 @@ def main():
     recording = False
     current_label = ""
     sample_count = 0
-    all_samples = existing_rows if existing_rows else []
+    new_samples = []  # This session only; only saved if you press ESC
+    save_on_exit = True  # False if user pressed Q
     frame_timestamp = 0
 
-    if not all_samples:
-        all_samples.append(make_header())
+    total_in_file = len(existing_rows) - 1 if existing_rows else 0
 
     print("\n=== ASL Data Collector (Letters + Words, Both Hands) ===")
     print("Press a letter key (A-Z) to record that letter sign.")
     print("Press a number key for word signs:")
     for k, v in sorted(WORD_KEYS.items()):
         print(f"  {chr(k)} = {v}")
-    print("Press SPACE to stop recording. Press ESC to quit and save.\n")
+    print("SPACE: stop recording | BACKSPACE: remove last sign from session | ESC: save | Q: quit without save\n")
 
     while True:
         ret, frame = cap.read()
@@ -193,7 +201,7 @@ def main():
 
             if recording:
                 features = extract_features(results.hand_landmarks)
-                all_samples.append([current_label] + features)
+                new_samples.append([current_label] + features)
                 sample_count += 1
 
         status_color = (0, 0, 255) if recording else (200, 200, 200)
@@ -203,18 +211,33 @@ def main():
             else "Ready - press a key to record"
         )
         cv2.putText(frame, status_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
-        cv2.putText(frame, f"Hands: {num_hands} | Total samples: {len(all_samples) - 1}",
+        cv2.putText(frame, f"Hands: {num_hands} | This session: {len(new_samples)} | In file: {total_in_file}",
                     (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
 
+        cv2.putText(frame, "BACKSPACE: remove last sign | ESC: save | Q: quit no save", (10, frame.shape[0] - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
         cv2.imshow("ASL Data Collector", frame)
         key = cv2.waitKey(1) & 0xFF
 
-        if key == 27:  # ESC
+        if key == 27:  # ESC — quit and save
+            save_on_exit = True
+            break
+        elif key in (ord("q"), ord("Q")):  # Q — quit without saving
+            save_on_exit = False
+            print("\nQuit without saving. This session's samples discarded.")
             break
         elif key == 32:  # SPACE
             if recording:
                 recording = False
                 print(f"  Stopped recording '{current_label}'. Got {sample_count} samples.")
+        elif key in (8, 127):  # BACKSPACE — remove last sign from this session (e.g. wrong E)
+            if not recording and new_samples:
+                last_label = new_samples[-1][0]
+                n_removed = sum(1 for row in new_samples if row[0] == last_label)
+                new_samples[:] = [row for row in new_samples if row[0] != last_label]
+                print(f"  Removed {n_removed} samples for '{last_label}' (not saved when you press ESC).")
+            elif not new_samples:
+                print("  No samples in this session to remove.")
         elif key in WORD_KEYS:
             current_label = WORD_KEYS[key]
             recording = True
@@ -230,11 +253,14 @@ def main():
     cv2.destroyAllWindows()
     hand_landmarker.close()
 
-    with open(DATA_FILE, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerows(all_samples)
-
-    print(f"\nSaved {len(all_samples) - 1} total samples to {DATA_FILE}")
+    if save_on_exit and (existing_rows or new_samples):
+        header = make_header()
+        rows_to_save = existing_rows if existing_rows else [header]
+        rows_to_save = rows_to_save + new_samples
+        with open(DATA_FILE, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerows(rows_to_save)
+        print(f"\nSaved {len(new_samples)} new samples ({len(rows_to_save) - 1} total in file).")
 
 
 if __name__ == "__main__":

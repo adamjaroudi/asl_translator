@@ -9,6 +9,7 @@ Usage:
     python train_model.py
 """
 
+import argparse
 import os
 import csv
 import pickle
@@ -28,6 +29,8 @@ MODEL_FILE = os.path.join(MODEL_DIR, "asl_classifier.pkl")
 
 TARGET_SAMPLES_PER_CLASS = 500
 AUG_MULTIPLIER           = 8
+# Stronger SVM (C=1.0) can improve accuracy when using --accuracy
+ACCURACY_SVC_C           = 1.0
 
 
 def load_data():
@@ -63,6 +66,15 @@ def augment_and_balance(X_raw, y, rng):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Train ASL classifier.")
+    parser.add_argument("--accuracy", action="store_true",
+                        help="Use stronger SVM (C=1.0) for better recognition accuracy")
+    args = parser.parse_args()
+
+    svc_c = ACCURACY_SVC_C if args.accuracy else 0.5
+    if args.accuracy:
+        print("Accuracy mode: training with C=1.0 for better recognition.\n")
+
     if not os.path.exists(DATA_FILE):
         print(f"Error: {DATA_FILE} not found.")
         print("Run 'python import_dataset.py' or 'python generate_dataset.py' first.")
@@ -105,7 +117,7 @@ def main():
     # CalibratedClassifierCV adds a tiny logistic regression on top — still <0.1 ms
     print("\nTraining LinearSVC classifier (fast inference)...")
     base = LinearSVC(
-        C=0.5,
+        C=svc_c,
         max_iter=3000,
         random_state=42,
         dual="auto",
@@ -138,6 +150,7 @@ def main():
 
     print(f"\nModel saved to {MODEL_FILE}")
     print("Now run: python asl_translator.py")
+    print("Tip: For best accuracy, collect your own data (python collect_data.py) then retrain with --accuracy")
 
 
 if __name__ == "__main__":
