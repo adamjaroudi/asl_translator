@@ -161,8 +161,8 @@ def main():
     elapsed = time.time() - t_start
     print(f"\nTotal training time: {elapsed:.0f}s ({elapsed/60:.1f} min)")
     print(f"Model saved to {MODEL_FILE}")
-    print("Now run: python asl_translator.py")
-    print("Tip: For best accuracy, collect your own data (python collect_data.py) then retrain with --accuracy")
+    print("Restart server.py to load the new model.")
+    print("Tip: For best accuracy, collect your own data then retrain with --accuracy")
 
 
 if __name__ == "__main__":

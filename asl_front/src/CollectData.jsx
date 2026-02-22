@@ -2,15 +2,28 @@ import { useState, useRef, useCallback, useEffect } from "react";
 
 const WS_URL      = "ws://localhost:8766";
 const RESTART_URL = "ws://localhost:8767";
+const CUSTOM_WORDS_KEY = "asl_custom_words"; // shared with Dictionary.jsx
 
 const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
-const WORD_SIGNS = [
+const DEFAULT_WORD_SIGNS = [
   "[I-LOVE-YOU]", "[GOOD]", "[MORE]", "[HELP]", "[BOOK]",
   "[STOP]", "[PLAY]", "[WANT]", "[WITH]", "[SAME]",
   "[NO]", "[YES]", "[FRIEND]", "[WORK]", "[FINISH]",
   "[GO]", "[SIT]", "[BIG]", "[SMALL]", "[LOVE]", "[EAT]", "[DRINK]",
 ];
+
+function wordToLabel(word) {
+  // Convert "i love you" -> "[I-LOVE-YOU]"
+  return "[" + word.trim().toUpperCase().replace(/\s+/g, "-") + "]";
+}
+
+function loadCustomWordLabels() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(CUSTOM_WORDS_KEY) || "[]");
+    return raw.map(w => wordToLabel(w.word || w));
+  } catch { return []; }
+}
 
 function formatLabel(label) {
   if (label.startsWith("[") && label.endsWith("]"))
@@ -57,6 +70,18 @@ export default function CollectData({ onNavigate }) {
   const [showTrainLog, setShowTrainLog] = useState(false);
   const [restarting, setRestarting]     = useState(false);
   const trainLogRef = useRef(null);
+
+  // Word signs = defaults + any custom words added via Dictionary or here
+  const [customWordSigns, setCustomWordSigns] = useState(loadCustomWordLabels);
+  const WORD_SIGNS = [
+    ...DEFAULT_WORD_SIGNS,
+    ...customWordSigns.filter(l => !DEFAULT_WORD_SIGNS.includes(l)),
+  ];
+
+  // Add new sign modal
+  const [showAddSign, setShowAddSign]   = useState(false);
+  const [newSignInput, setNewSignInput] = useState("");
+  const [newSignError, setNewSignError] = useState("");
 
   const handleRestart = useCallback(() => {
     setRestarting(true);
@@ -132,6 +157,25 @@ export default function CollectData({ onNavigate }) {
   const handleTrain = () => {
     if (!connected || training) return;
     send({ action: "train" });
+  };
+
+  const handleAddSign = () => {
+    const label = wordToLabel(newSignInput);
+    if (!newSignInput.trim()) { setNewSignError("Enter a word or phrase."); return; }
+    if (WORD_SIGNS.includes(label)) { setNewSignError("This sign already exists."); return; }
+    // Save to localStorage so Dictionary picks it up too
+    try {
+      const existing = JSON.parse(localStorage.getItem(CUSTOM_WORDS_KEY) || "[]");
+      const word = newSignInput.trim().toLowerCase();
+      if (!existing.find(w => (w.word || w) === word)) {
+        existing.unshift({ word, videoId: null });
+        localStorage.setItem(CUSTOM_WORDS_KEY, JSON.stringify(existing));
+      }
+    } catch {}
+    setCustomWordSigns(prev => [label, ...prev]);
+    setCurrentLabel(label);
+    setTab("words");
+    setNewSignInput(""); setNewSignError(""); setShowAddSign(false);
   };
 
   const samplesForLabel = (label) => classStats[label] || 0;
@@ -322,6 +366,15 @@ export default function CollectData({ onNavigate }) {
             >
               Word Signs
             </button>
+            <div style={{ flex: 1 }} />
+            {tab === "words" && (
+              <button
+                style={{ ...s.btn, ...s.btnPrimary, fontSize: 12, padding: "5px 12px", margin: "6px 0" }}
+                onClick={() => { setNewSignInput(""); setNewSignError(""); setShowAddSign(true); }}
+              >
+                + Add Sign
+              </button>
+            )}
           </div>
 
           <div style={s.signGrid}>
@@ -355,6 +408,40 @@ export default function CollectData({ onNavigate }) {
           </div>
         </div>
       </div>
+
+      {/* ── Add Sign Modal ── */}
+      {showAddSign && (
+        <div style={s.overlay} onClick={() => setShowAddSign(false)}>
+          <div style={s.modal} onClick={e => e.stopPropagation()}>
+            <div style={s.modalHeader}>
+              <span style={s.modalTitle}>Add a new sign to collect</span>
+              <button style={s.modalClose} onClick={() => setShowAddSign(false)}>✕</button>
+            </div>
+            <div style={s.modalBody}>
+              <label style={s.fieldLabel}>Word or phrase</label>
+              <input
+                style={s.fieldInput}
+                type="text"
+                placeholder="e.g. bathroom, i love you"
+                value={newSignInput}
+                onChange={e => { setNewSignInput(e.target.value); setNewSignError(""); }}
+                onKeyDown={e => e.key === "Enter" && handleAddSign()}
+                autoFocus
+              />
+              {newSignInput && (
+                <div style={s.fieldPreview}>
+                  Label will be: <strong>{wordToLabel(newSignInput)}</strong>
+                </div>
+              )}
+              {newSignError && <div style={s.fieldError}>{newSignError}</div>}
+              <div style={s.modalFooter}>
+                <button style={{ ...s.btn, ...s.btnPrimary }} onClick={handleAddSign}>Add sign</button>
+                <button style={s.btn} onClick={() => setShowAddSign(false)}>Cancel</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -507,6 +594,38 @@ const s = {
     fontSize: 11, lineHeight: 1.6,
   },
   trainLogLine: { color: "#d4d4d0", whiteSpace: "pre-wrap", wordBreak: "break-all" },
+
+  // Modal
+  overlay: {
+    position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)",
+    display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100,
+  },
+  modal: {
+    background: C.surface, border: `1px solid ${C.border}`,
+    width: "100%", maxWidth: 420, boxShadow: "0 8px 32px rgba(0,0,0,0.12)",
+  },
+  modalHeader: {
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+    padding: "14px 18px", borderBottom: `1px solid ${C.border}`,
+  },
+  modalTitle:  { fontSize: 15, fontWeight: 600 },
+  modalClose:  { background: "none", border: "none", fontSize: 16, color: C.textDim, cursor: "pointer" },
+  modalBody:   { padding: "18px 18px 14px" },
+  modalFooter: { display: "flex", gap: 8, marginTop: 18 },
+  fieldLabel:  { display: "block", fontSize: 12, fontWeight: 600, color: C.textMid, marginBottom: 5 },
+  fieldInput: {
+    width: "100%", padding: "8px 10px", border: `1px solid ${C.border}`,
+    fontSize: 13, color: C.text, background: C.bg, outline: "none",
+  },
+  fieldPreview: {
+    marginTop: 7, fontSize: 12, color: C.textMid,
+    padding: "5px 8px", background: "#f0f0eb", border: `1px solid ${C.border}`,
+    fontFamily: "'IBM Plex Mono', monospace",
+  },
+  fieldError: {
+    marginTop: 7, fontSize: 12, color: "#b91c1c",
+    padding: "5px 8px", background: "#fef2f2", border: "1px solid #fca5a5",
+  },
 
   tipsBox: {
     border: `1px solid ${C.border}`,
