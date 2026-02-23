@@ -196,7 +196,7 @@ export default function CollectData({ onNavigate }) {
       {/* Header */}
       <header style={s.header}>
         <div style={s.headerLeft}>
-          <button style={s.backBtn} onClick={() => onNavigate("translator")}>← Translator</button>
+          <button style={s.backBtn} onClick={() => onNavigate("home")}>← Home</button>
           <span style={s.dividerV} />
           <span style={s.headerTitle}>Collect Training Data</span>
         </div>
