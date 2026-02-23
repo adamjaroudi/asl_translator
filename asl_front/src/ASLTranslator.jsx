@@ -137,6 +137,9 @@ export default function ASLTranslator({ onNavigate }) {
           <span style={s.headerTitle}>ASL Translator</span>
         </div>
         <nav style={s.headerNav}>
+          {onNavigate && (
+            <button style={s.headerNavBtn} onClick={() => onNavigate("home")}>← Home</button>
+          )}
           <button style={s.headerNavBtn} onClick={() => onNavigate ? onNavigate("dictionary") : setShowDict(true)}>Dictionary</button>
           <button style={s.headerNavBtn} onClick={() => setShowHistory(true)}>
             History{history.length > 0 ? ` (${history.length})` : ""}
@@ -281,7 +284,7 @@ export default function ASLTranslator({ onNavigate }) {
             <div style={s.detectedRow}>
               <span style={s.detectedEmoji}>{data.prediction ? (signEmoji || "—") : "—"}</span>
               <div style={s.detectedRight}>
-                <div style={s.detectedName}>{data.prediction || "None"}</div>
+                <div style={s.detectedName}>{data.prediction || "Waiting for sign…"}</div>
                 {data.prediction && (
                   <div style={s.holdRow}>
                     <div style={s.holdTrack}>

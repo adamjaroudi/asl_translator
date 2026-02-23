@@ -13,6 +13,7 @@ Usage:
     python train_model.py
 """
 
+import argparse
 import os
 import csv
 import time
@@ -32,7 +33,9 @@ MODEL_DIR  = "model"
 MODEL_FILE = os.path.join(MODEL_DIR, "asl_classifier.pkl")
 
 TARGET_SAMPLES_PER_CLASS = 500
-AUG_MULTIPLIER = 4          # was 8 — halves augmentation time
+AUG_MULTIPLIER           = 8
+# Stronger SVM (C=1.0) can improve accuracy when using --accuracy
+ACCURACY_SVC_C           = 1.0
 
 
 def load_data():
@@ -83,6 +86,15 @@ def batch_engineer(X_list, label="samples"):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Train ASL classifier.")
+    parser.add_argument("--accuracy", action="store_true",
+                        help="Use stronger SVM (C=1.0) for better recognition accuracy")
+    args = parser.parse_args()
+
+    svc_c = ACCURACY_SVC_C if args.accuracy else 0.5
+    if args.accuracy:
+        print("Accuracy mode: training with C=1.0 for better recognition.\n")
+
     if not os.path.exists(DATA_FILE):
         print(f"Error: {DATA_FILE} not found.")
         print("Run 'python import_dataset.py' or 'python generate_dataset.py' first.")
@@ -124,15 +136,13 @@ def main():
     print(f"Training set: {len(X_train)} samples")
     print(f"Test set:     {len(X_test)} samples")
 
-    print("\nTraining LinearSVC classifier...")
-    print("  cv=2, n_jobs=-1 (all CPU cores)")
-
+    print("\nTraining LinearSVC classifier (cv=2, n_jobs=-1)...")
     clf = Pipeline([
         ("scaler", StandardScaler()),
         ("svc", CalibratedClassifierCV(
-            LinearSVC(max_iter=2000, C=0.5, random_state=42),
-            cv=2,        # was 3 — saves one full fit
-            n_jobs=-1,   # use all CPU cores
+            LinearSVC(C=svc_c, max_iter=3000, random_state=42, dual="auto"),
+            cv=2,
+            n_jobs=-1,
         )),
     ])
     clf.fit(X_train, y_train_aug)
@@ -152,6 +162,7 @@ def main():
     print(f"\nTotal training time: {elapsed:.0f}s ({elapsed/60:.1f} min)")
     print(f"Model saved to {MODEL_FILE}")
     print("Restart server.py to load the new model.")
+    print("Tip: For best accuracy, collect your own data then retrain with --accuracy")
 
 
 if __name__ == "__main__":

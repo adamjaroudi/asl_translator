@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # ASL Translator
 
 Real-time American Sign Language translator using your webcam, MediaPipe hand tracking, and machine learning. Recognizes both **alphabet letters** (A-Z) and **common word signs** using one or both hands.
@@ -140,6 +139,3 @@ python train_model.py
 - Python 3.8+
 - Webcam
 - Windows / macOS / Linux
-=======
-# asl_translator
->>>>>>> f3acae12bcc1a0b3e270a7f20931954586ba481b
