@@ -134,6 +134,12 @@ export default function Home({ onNavigate }) {
             <span style={{ fontSize: 24 }}>📷</span>
             Camera
           </button>
+          <button
+            style={styles.btnSecondary}
+            onClick={() => onNavigate("practice")}
+          >
+            Practice A–Z (flashcards & test)
+          </button>
         </div>
       </main>
 
