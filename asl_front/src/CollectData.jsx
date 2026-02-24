@@ -1,38 +1,48 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 
-const WS_URL      = "ws://localhost:8766";
-const RESTART_URL = "ws://localhost:8767";
-const CUSTOM_WORDS_KEY = "asl_custom_words"; // shared with Dictionary.jsx
+const WS_URL        = "ws://localhost:8766";
+const WS_MOTION_URL = "ws://localhost:8769";
+const RESTART_URL   = "ws://localhost:8767";
+const CUSTOM_WORDS_KEY = "asl_custom_words";
 
 const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
 const DEFAULT_WORD_SIGNS = [
-  "[I-LOVE-YOU]", "[GOOD]", "[MORE]", "[HELP]", "[BOOK]",
-  "[STOP]", "[PLAY]", "[WANT]", "[WITH]", "[SAME]",
-  "[NO]", "[YES]", "[FRIEND]", "[WORK]", "[FINISH]",
-  "[GO]", "[SIT]", "[BIG]", "[SMALL]", "[LOVE]", "[EAT]", "[DRINK]",
+  "[I-LOVE-YOU]","[GOOD]","[MORE]","[HELP]","[BOOK]",
+  "[STOP]","[PLAY]","[WANT]","[WITH]","[SAME]",
+  "[NO]","[YES]","[FRIEND]","[WORK]","[FINISH]",
+  "[GO]","[SIT]","[BIG]","[SMALL]","[LOVE]","[EAT]","[DRINK]",
 ];
 
-function wordToLabel(word) {
-  // Convert "i love you" -> "[I-LOVE-YOU]"
-  return "[" + word.trim().toUpperCase().replace(/\s+/g, "-") + "]";
-}
+const MOTION_SIGNS = [
+  { key:"J",           label:"J",         desc:"I-hand traces J curve" },
+  { key:"Z",           label:"Z",         desc:"Index traces Z shape" },
+  { key:"[PLEASE]",    label:"PLEASE",    desc:"Flat hand circles on chest" },
+  { key:"[THANK_YOU]", label:"THANK YOU", desc:"Hand from chin outward" },
+  { key:"[WHERE]",     label:"WHERE",     desc:"Index wags side-to-side" },
+  { key:"[HOW]",       label:"HOW",       desc:"Curved hands roll forward" },
+  { key:"[COME]",      label:"COME",      desc:"Index curls toward body" },
+  { key:"[GO_AWAY]",   label:"GO AWAY",   desc:"Wrist flick outward" },
+  { key:"[NAME]",      label:"NAME",      desc:"H-hand taps twice" },
+];
 
+const SEQ_LENGTH   = 30;
+const MOTION_TARGET = 100;
+const STATIC_TARGET = 200;
+
+function wordToLabel(word) { return "[" + word.trim().toUpperCase().replace(/\s+/g,"-") + "]"; }
 function loadCustomWordLabels() {
-  try {
-    const raw = JSON.parse(localStorage.getItem(CUSTOM_WORDS_KEY) || "[]");
-    return raw.map(w => wordToLabel(w.word || w));
-  } catch { return []; }
+  try { return JSON.parse(localStorage.getItem(CUSTOM_WORDS_KEY)||"[]").map(w=>wordToLabel(w.word||w)); }
+  catch { return []; }
 }
-
-function formatLabel(label) {
-  if (label.startsWith("[") && label.endsWith("]"))
-    return label.slice(1, -1).replace(/-/g, " ");
+function fmt(label) {
+  if (label.startsWith("[")&&label.endsWith("]")) return label.slice(1,-1).replace(/-/g," ");
   return label;
 }
 
-function useWebSocket(url, onMessage) {
+function useWebSocket(url) {
   const wsRef = useRef(null);
+  const onMessageRef = useRef(null);
   const [connected, setConnected] = useState(false);
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
@@ -40,403 +50,514 @@ function useWebSocket(url, onMessage) {
     ws.onopen    = () => setConnected(true);
     ws.onclose   = () => { setConnected(false); wsRef.current = null; };
     ws.onerror   = () => ws.close();
-    ws.onmessage = (e) => onMessage(JSON.parse(e.data));
+    ws.onmessage = (e) => { try { onMessageRef.current?.(JSON.parse(e.data)); } catch {} };
     wsRef.current = ws;
-  }, [url, onMessage]);
-  const disconnect = useCallback(() => wsRef.current?.close(), []);
+  }, [url]);
+  const disconnect = useCallback(() => { wsRef.current?.close(); wsRef.current = null; }, []);
   const send = useCallback((data) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN)
-      wsRef.current.send(JSON.stringify(data));
+    if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(JSON.stringify(data));
   }, []);
   useEffect(() => () => wsRef.current?.close(), []);
-  return { connected, connect, disconnect, send };
+  return { connected, connect, disconnect, send, onMessageRef };
 }
 
 export default function CollectData({ onNavigate }) {
-  const [frame, setFrame]           = useState(null);
-  const [numHands, setNumHands]     = useState(0);
-  const [recording, setRecording]   = useState(false);
+  const [tab, setTab] = useState("letters");
+
+  // ── Static state ──────────────────────────────────────────────────────────
+  const [frame, setFrame]             = useState(null);
+  const [numHands, setNumHands]       = useState(0);
+  const [recording, setRecording]     = useState(false);
   const [currentLabel, setCurrentLabel] = useState("");
-  const [sampleCount, setSampleCount]   = useState(0);
+  const [sampleCount, setSampleCount] = useState(0);
   const [totalSamples, setTotalSamples] = useState(0);
-  const [classStats, setClassStats] = useState({});
-  const [active, setActive]         = useState(false);
-  const [fps, setFps]               = useState(0);
-  const [tab, setTab]               = useState("letters"); // "letters" | "words"
+  const [classStats, setClassStats]   = useState({});
+  const [active, setActive]           = useState(false);
+  const [fps, setFps]                 = useState(0);
   const [saveMsg, setSaveMsg]         = useState("");
-  const [confirmTrim, setConfirmTrim]   = useState(false);
-  const [training, setTraining]         = useState(false);
-  const [trainLog, setTrainLog]         = useState([]);
+  const [trimLabel, setTrimLabel]     = useState("");   // label currently confirming delete
+  const [training, setTraining]       = useState(false);
+  const [trainLog, setTrainLog]       = useState([]);
   const [showTrainLog, setShowTrainLog] = useState(false);
-  const [restarting, setRestarting]     = useState(false);
+  const [restarting, setRestarting]   = useState(false);
   const trainLogRef = useRef(null);
 
-  // Word signs = defaults + any custom words added via Dictionary or here
   const [customWordSigns, setCustomWordSigns] = useState(loadCustomWordLabels);
-  const WORD_SIGNS = [
-    ...DEFAULT_WORD_SIGNS,
-    ...customWordSigns.filter(l => !DEFAULT_WORD_SIGNS.includes(l)),
-  ];
-
-  // Add new sign modal
-  const [showAddSign, setShowAddSign]   = useState(false);
+  const WORD_SIGNS = [...DEFAULT_WORD_SIGNS, ...customWordSigns.filter(l=>!DEFAULT_WORD_SIGNS.includes(l))];
+  const [showAddSign, setShowAddSign] = useState(false);
   const [newSignInput, setNewSignInput] = useState("");
   const [newSignError, setNewSignError] = useState("");
+
+  // ── Motion state ──────────────────────────────────────────────────────────
+  const [motionFrame, setMotionFrame]       = useState(null);
+  const [motionNumHands, setMotionNumHands] = useState(0);
+  const [motionState, setMotionState]       = useState("idle");   // idle | recording | done
+  const [motionProgress, setMotionProgress] = useState(0);
+  const [motionFrames, setMotionFrames]     = useState(0);
+  const [hasPending, setHasPending]         = useState(false);
+  const [motionCountMap, setMotionCountMap] = useState({});
+  const [motionFps, setMotionFps]           = useState(0);
+  const [motionActive, setMotionActive]     = useState(false);
+  const [selectedSign, setSelectedSign]     = useState("");       // currently targeted label
+  const [autoAdvance, setAutoAdvance]       = useState(true);     // auto-save + loop
+  const [autoReps, setAutoReps]             = useState(5);        // sequences per burst
+  const [autoDone, setAutoDone]             = useState(0);        // completed this burst
+  const [autoRunning, setAutoRunning]       = useState(false);
+  const [motionTraining, setMotionTraining] = useState(false);
+  const [motionTrainLog, setMotionTrainLog] = useState([]);
+  const [showMotionLog, setShowMotionLog]   = useState(false);
+  const [lastSaved, setLastSaved]           = useState(null);
+  const [motionTrimLabel, setMotionTrimLabel] = useState("");
+  const motionLogRef = useRef(null);
+  const autoRunningRef = useRef(false);
+
+  // ── Static WS ─────────────────────────────────────────────────────────────
+  const { connected, connect, disconnect, send, onMessageRef } = useWebSocket(WS_URL);
+  onMessageRef.current = (msg) => {
+    if (msg.frame)                       setFrame(msg.frame);
+    if (msg.num_hands !== undefined)     setNumHands(msg.num_hands);
+    if (msg.fps !== undefined)           setFps(msg.fps);
+    if (msg.sample_count !== undefined)  setSampleCount(msg.sample_count);
+    if (msg.total_samples !== undefined) setTotalSamples(msg.total_samples);
+    if (msg.class_stats)                 setClassStats(msg.class_stats);
+    if (msg.saved) { setSaveMsg(`Saved ${msg.saved} samples → ${msg.path}`); setTimeout(()=>setSaveMsg(""),3000); }
+    if (msg.train_start) { setTraining(true); setTrainLog([]); setShowTrainLog(true); }
+    if (msg.train_log) { setTrainLog(p=>[...p,msg.train_log]); setShowTrainLog(true); setTimeout(()=>{ if(trainLogRef.current) trainLogRef.current.scrollTop=trainLogRef.current.scrollHeight; },30); }
+    if (msg.train_done) setTraining(false);
+    if (msg.trimmed) { setSaveMsg(`Deleted all ${msg.label} samples from CSV`); setTimeout(()=>setSaveMsg(""),3000); }
+  };
 
   const handleRestart = useCallback(() => {
     setRestarting(true);
     const ws = new WebSocket(RESTART_URL);
-    ws.onopen    = () => ws.send(JSON.stringify({ action: "restart" }));
-    ws.onmessage = () => { ws.close(); setTimeout(() => setRestarting(false), 2500); };
+    ws.onopen    = () => ws.send(JSON.stringify({ action:"restart" }));
+    ws.onmessage = () => { ws.close(); setTimeout(()=>setRestarting(false),2500); };
     ws.onerror   = () => setRestarting(false);
   }, []);
 
-  const onMessage = useCallback((msg) => {
-    if (msg.frame)        setFrame(msg.frame);
-    if (msg.num_hands !== undefined) setNumHands(msg.num_hands);
-    if (msg.fps !== undefined)       setFps(msg.fps);
-    if (msg.sample_count !== undefined) setSampleCount(msg.sample_count);
-    if (msg.total_samples !== undefined) setTotalSamples(msg.total_samples);
-    if (msg.class_stats)  setClassStats(msg.class_stats);
-    if (msg.saved) {
-      setSaveMsg(`Saved ${msg.saved} samples to ${msg.path}`);
-      setTimeout(() => setSaveMsg(""), 3000);
-    }
-    if (msg.train_log) {
-      setTrainLog(prev => [...prev, msg.train_log]);
-      setShowTrainLog(true);
-      setTimeout(() => {
-        if (trainLogRef.current)
-          trainLogRef.current.scrollTop = trainLogRef.current.scrollHeight;
-      }, 30);
-    }
-    if (msg.train_start) { setTraining(true); setTrainLog([]); setShowTrainLog(true); }
-    if (msg.train_done)  { setTraining(false); }
-  }, []);
-
-  const { connected, connect, disconnect, send } = useWebSocket(WS_URL, onMessage);
-
   const handleToggle = () => {
-    if (active) {
-      send({ action: "stop_recording" });
-      disconnect();
-      setActive(false);
-      setFrame(null);
-      setRecording(false);
-    } else {
-      connect();
-      setActive(true);
-    }
+    if (active) { send({ action:"stop_recording" }); disconnect(); setActive(false); setFrame(null); setRecording(false); }
+    else { connect(); setActive(true); }
   };
-
-  const startRecording = (label) => {
-    if (!connected) return;
-    setCurrentLabel(label);
-    setSampleCount(0);
-    setRecording(true);
-    send({ action: "start_recording", label });
-  };
-
-  const stopRecording = () => {
-    if (!connected) return;
-    setRecording(false);
-    send({ action: "stop_recording" });
-  };
-
-  const handleSave = () => {
-    if (!connected) return;
-    send({ action: "save" });
-  };
-
-  const handleTrim = () => {
-    if (!connected) return;
-    send({ action: "trim", keep: 100 });
-    setConfirmTrim(false);
-  };
-
-  const handleTrain = () => {
-    if (!connected || training) return;
-    send({ action: "train" });
-  };
+  const startRecording = (label) => { if (!connected) return; setCurrentLabel(label); setSampleCount(0); setRecording(true); send({ action:"start_recording", label }); };
+  const stopRecording  = () => { if (!connected) return; setRecording(false); send({ action:"stop_recording" }); };
+  const handleSave     = () => { if (connected) send({ action:"save" }); };
+  const handleTrimLabel = (label) => { if (connected) { send({ action:"trim_label", label }); setTrimLabel(""); } };
+  const handleTrain    = () => { if (connected && !training) send({ action:"train" }); };
 
   const handleAddSign = () => {
     const label = wordToLabel(newSignInput);
     if (!newSignInput.trim()) { setNewSignError("Enter a word or phrase."); return; }
-    if (WORD_SIGNS.includes(label)) { setNewSignError("This sign already exists."); return; }
-    // Save to localStorage so Dictionary picks it up too
+    if (WORD_SIGNS.includes(label)) { setNewSignError("Already exists."); return; }
     try {
-      const existing = JSON.parse(localStorage.getItem(CUSTOM_WORDS_KEY) || "[]");
-      const word = newSignInput.trim().toLowerCase();
-      if (!existing.find(w => (w.word || w) === word)) {
-        existing.unshift({ word, videoId: null });
-        localStorage.setItem(CUSTOM_WORDS_KEY, JSON.stringify(existing));
-      }
+      const ex = JSON.parse(localStorage.getItem(CUSTOM_WORDS_KEY)||"[]");
+      const w = newSignInput.trim().toLowerCase();
+      if (!ex.find(x=>(x.word||x)===w)) { ex.unshift({ word:w, videoId:null }); localStorage.setItem(CUSTOM_WORDS_KEY,JSON.stringify(ex)); }
     } catch {}
-    setCustomWordSigns(prev => [label, ...prev]);
-    setCurrentLabel(label);
-    setTab("words");
+    setCustomWordSigns(p=>[label,...p]);
+    setCurrentLabel(label); setTab("words");
     setNewSignInput(""); setNewSignError(""); setShowAddSign(false);
   };
 
-  const samplesForLabel = (label) => classStats[label] || 0;
-  const totalForLabel   = (label) => samplesForLabel(label);
-  const TARGET = 200;
+  // ── Motion WS ─────────────────────────────────────────────────────────────
+  const { connected:motionConnected, connect:motionConnect, disconnect:motionDisconnect, send:motionSend, onMessageRef:motionOnMessageRef } = useWebSocket(WS_MOTION_URL);
+
+  motionOnMessageRef.current = (msg) => {
+    if (msg.frame)                         setMotionFrame(msg.frame);
+    if (msg.num_hands !== undefined)       setMotionNumHands(msg.num_hands);
+    if (msg.fps !== undefined)             setMotionFps(msg.fps);
+    if (msg.state !== undefined)           setMotionState(msg.state);
+    if (msg.progress !== undefined)        setMotionProgress(msg.progress);
+    if (msg.frames_recorded !== undefined) setMotionFrames(msg.frames_recorded);
+    if (msg.has_pending !== undefined)     setHasPending(msg.has_pending);
+    if (msg.count_map !== undefined)       setMotionCountMap(msg.count_map);
+    if (msg.saved_sequence) {
+      setLastSaved({ label:msg.label, count:msg.count });
+      setAutoDone(d => {
+        const next = d + 1;
+        // if auto-advance and still have reps, trigger next recording after short delay
+        if (autoRunningRef.current && next < autoRepsRef.current) {
+          setTimeout(() => { if (autoRunningRef.current) motionSend({ action:"start_recording" }); }, 600);
+        } else if (autoRunningRef.current) {
+          autoRunningRef.current = false;
+          setAutoRunning(false);
+        }
+        return next;
+      });
+      setSelectedSign("");
+      setTimeout(() => setLastSaved(null), 2500);
+    }
+    if (msg.trimmed_motion) { setLastSaved({ label:msg.label, count:0, deleted:true }); setMotionTrimLabel(""); setTimeout(()=>setLastSaved(null),2500); }
+    if (msg.train_start) { setMotionTraining(true); setMotionTrainLog([]); setShowMotionLog(true); }
+    if (msg.train_log)   { setMotionTrainLog(p=>[...p,msg.train_log]); setTimeout(()=>{ if(motionLogRef.current) motionLogRef.current.scrollTop=motionLogRef.current.scrollHeight; },30); }
+    if (msg.train_done)  setMotionTraining(false);
+  };
+
+  // keep refs in sync so the closure above can read latest values
+  const autoRepsRef = useRef(autoReps);
+  useEffect(() => { autoRepsRef.current = autoReps; }, [autoReps]);
+
+  const handleMotionToggle = () => {
+    if (motionActive) {
+      autoRunningRef.current = false; setAutoRunning(false);
+      motionSend({ action:"stop_recording" });
+      motionDisconnect(); setMotionActive(false); setMotionFrame(null);
+      setMotionState("idle"); setHasPending(false);
+    } else { motionConnect(); setMotionActive(true); }
+  };
+
+  const handleTabChange = (newTab) => {
+    if (newTab === "motion" && active) { send({ action:"stop_recording" }); disconnect(); setActive(false); setFrame(null); setRecording(false); }
+    if (newTab !== "motion" && motionActive) { autoRunningRef.current=false; setAutoRunning(false); motionSend({ action:"stop_recording" }); motionDisconnect(); setMotionActive(false); setMotionFrame(null); setMotionState("idle"); setHasPending(false); }
+    setTab(newTab);
+  };
+
+  // Start a burst of auto-advance recordings
+  const startAutoBurst = () => {
+    if (!motionConnected || !selectedSign) return;
+    setAutoDone(0);
+    autoRunningRef.current = true;
+    setAutoRunning(true);
+    motionSend({ action:"start_recording" });
+  };
+
+  const stopAuto = () => {
+    autoRunningRef.current = false;
+    setAutoRunning(false);
+    motionSend({ action:"stop_recording" });
+  };
+
+  // When a sequence is done and auto-advance is on, auto-save with selected label
+  useEffect(() => {
+    if (!autoRunningRef.current) return;
+    if (motionState === "done" && hasPending && selectedSign) {
+      motionSend({ action:"label_sequence", label:selectedSign });
+    }
+  }, [motionState, hasPending, selectedSign]);
+
+  const startMotionRec = () => motionSend({ action:"start_recording" });
+  const stopMotionRec  = () => motionSend({ action:"stop_recording" });
+  const discardMotion  = () => { motionSend({ action:"discard" }); setSelectedSign(""); };
+  const saveMotion     = () => { if (selectedSign) motionSend({ action:"label_sequence", label:selectedSign }); };
+  const trainMotion    = () => { if (!motionTraining) { setMotionTrainLog([]); motionSend({ action:"train_motion" }); } };
+  const trimMotionLabel = (label) => { motionSend({ action:"trim_motion_label", label }); setMotionTrimLabel(""); };
 
   return (
     <div style={s.root}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
         body { background: #f5f5f0; }
         button { font-family: 'IBM Plex Sans', sans-serif; cursor: pointer; }
-        button:disabled { opacity: 0.4; cursor: default; }
+        button:disabled { opacity: 0.38; cursor: default; }
         @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
       `}</style>
 
       {/* Header */}
       <header style={s.header}>
-        <div style={s.headerLeft}>
-          <button style={s.backBtn} onClick={() => onNavigate("home")}>← Home</button>
-          <span style={s.dividerV} />
-          <span style={s.headerTitle}>Collect Training Data</span>
+        <div style={s.hLeft}>
+          <div style={s.logoMark}>N</div>
+          <span style={s.logoText}>NeuroSign</span>
+          <span style={s.sep}>·</span>
+          <span style={s.pageTitle}>Collect Data</span>
         </div>
-        <div style={s.headerRight}>
-          {active && <span style={s.fpsTag}>{fps > 0 ? `${fps} fps` : "—"}</span>}
-          <span style={{ ...s.statusDot, background: connected ? "#2e7d32" : "#9e9e9e" }} />
-          <span style={s.statusText}>{connected ? "Connected" : "Disconnected"}</span>
-          <button
-            style={{ ...s.btn, ...(restarting ? { color: "#b45309", borderColor: "#fcd34d" } : {}) }}
-            onClick={handleRestart}
-            disabled={restarting}
-            title="Restart server to load newly trained model"
-          >
-            {restarting ? "↺ Restarting…" : "↺ Restart Server"}
+        <div style={s.hRight}>
+          {tab !== "motion" && active   && <FpsTag fps={fps} />}
+          {tab === "motion" && motionActive && <FpsTag fps={motionFps} />}
+          <StatusDot on={(tab==="motion" ? motionConnected : connected)} />
+          <button style={{ ...s.btn, ...(restarting ? { color:"#b45309", border:"1px solid #fcd34d" } : {}) }}
+            onClick={handleRestart} disabled={restarting}>
+            {restarting ? "↺ Restarting…" : "↺ Restart"}
           </button>
-          <button style={{ ...s.btn, ...s.btnPrimary }} onClick={handleToggle}>
-            {active ? "Stop Camera" : "Start Camera"}
+          <button style={{ ...s.btn, ...s.btnPrimary }}
+            onClick={tab==="motion" ? handleMotionToggle : handleToggle}>
+            {(tab==="motion" ? motionActive : active) ? "Stop Camera" : "Start Camera"}
           </button>
         </div>
       </header>
 
       <div style={s.body}>
-        {/* Left: camera + controls */}
+        {/* ── Left column: camera + controls ── */}
         <div style={s.leftCol}>
-          <div style={s.camWrap}>
-            {frame
-              ? <img src={`data:image/jpeg;base64,${frame}`} alt="feed" style={s.camImg} />
-              : <div style={s.camBlank}>
-                  <span style={s.camBlankIcon}>◻</span>
-                  <span style={s.camBlankText}>{active ? "Connecting…" : "Camera inactive"}</span>
-                </div>
-            }
-            {recording && (
-              <div style={s.recBadge}>
-                <span style={{ ...s.recDot, animation: "blink 1s step-end infinite" }} />
-                Recording: <strong style={{ marginLeft: 4 }}>{formatLabel(currentLabel)}</strong>
-                <span style={s.recCount}>{sampleCount} samples</span>
-              </div>
-            )}
-            {active && (
-              <div style={{
-                ...s.handTag,
-                background:  numHands > 0 ? "#e8f5e9" : "#fff8e1",
-                color:       numHands > 0 ? "#2e7d32" : "#f57f17",
-                borderColor: numHands > 0 ? "#a5d6a7" : "#ffe082",
-              }}>
-                {numHands > 0 ? `${numHands} hand${numHands > 1 ? "s" : ""}` : "No hands"}
-              </div>
-            )}
-          </div>
 
-          {/* Recording controls */}
-          <div style={s.recControls}>
-            <div style={s.recCtrlRow}>
-              <div style={s.recLabelDisplay}>
-                {currentLabel
-                  ? <><span style={s.recLabelPill}>{formatLabel(currentLabel)}</span><span style={s.recLabelSub}>{sampleCount} collected this session</span></>
-                  : <span style={s.recLabelEmpty}>Select a sign below to record</span>
-                }
-              </div>
-              <button
-                style={{ ...s.btn, ...(recording ? s.btnDanger : s.btnRecord) }}
-                onClick={recording ? stopRecording : () => currentLabel && startRecording(currentLabel)}
-                disabled={!connected || (!recording && !currentLabel)}
-              >
-                {recording ? "■ Stop" : "● Record"}
-              </button>
-            </div>
-          </div>
-
-          {/* Stats */}
-          <div style={s.statsBox}>
-            <div style={s.statsRow}>
-              <div style={s.statItem}>
-                <span style={s.statNum}>{totalSamples}</span>
-                <span style={s.statLabel}>Total samples</span>
-              </div>
-              <div style={s.statItem}>
-                <span style={s.statNum}>{Object.keys(classStats).length}</span>
-                <span style={s.statLabel}>Classes</span>
-              </div>
-              <div style={s.statItem}>
-                <span style={s.statNum}>{recording ? sampleCount : "—"}</span>
-                <span style={s.statLabel}>This session</span>
-              </div>
-            </div>
-            <div style={s.saveBtnRow}>
-              <button style={{ ...s.btn, ...s.btnPrimary, flex: 1 }} onClick={handleSave} disabled={!connected || totalSamples === 0}>
-                Save to CSV
-              </button>
-              {!confirmTrim
-                ? <button
-                    style={{ ...s.btn, color: "#b91c1c", borderColor: "#fca5a5" }}
-                    onClick={() => setConfirmTrim(true)}
-                    disabled={!connected || totalSamples <= 100}
-                    title="Keep only first 100 rows of CSV"
-                  >
-                    Trim CSV
-                  </button>
-                : <div style={s.confirmRow}>
-                    <span style={s.confirmText}>Keep only first 100 rows?</span>
-                    <button style={{ ...s.btn, background: "#b91c1c", color: "#fff", border: "1px solid #b91c1c" }} onClick={handleTrim}>
-                      Yes, trim
-                    </button>
-                    <button style={s.btn} onClick={() => setConfirmTrim(false)}>Cancel</button>
+          {tab !== "motion" ? (
+            <>
+              {/* Camera */}
+              <CamView frame={frame} active={active} numHands={numHands}>
+                {recording && (
+                  <div style={s.recBadge}>
+                    <span style={{ ...s.recDot, animation:"blink 1s step-end infinite" }} />
+                    {fmt(currentLabel)} · <span style={{ fontFamily:"'IBM Plex Mono', monospace" }}>{sampleCount}</span>
                   </div>
-              }
-            </div>
-            {saveMsg && <div style={s.saveMsg}>{saveMsg}</div>}
+                )}
+              </CamView>
 
-            {/* Train model */}
-            <div style={s.divider} />
-            <button
-              style={{ ...s.btn, ...s.btnPrimary, ...(training ? { opacity: 0.7 } : {}) }}
-              onClick={handleTrain}
-              disabled={!connected || training || totalSamples === 0}
-            >
-              {training ? "⏳ Training…" : "▶ Train Model"}
-            </button>
-            {training && (
-              <div style={s.trainingNote}>
-                Training in progress — this takes a few minutes. Do not close the server.
-              </div>
-            )}
-            {showTrainLog && trainLog.length > 0 && (
-              <div style={s.trainLogWrap}>
-                <div style={s.trainLogHeader}>
-                  <span style={s.trainLogTitle}>
-                    {training ? "Training output" : "Training complete ✓"}
-                  </span>
-                  <button style={s.trainLogClose} onClick={() => setShowTrainLog(false)}>✕</button>
+              {/* Record controls */}
+              <div style={s.panel}>
+                <div style={s.recRow}>
+                  <div style={{ flex:1 }}>
+                    {currentLabel
+                      ? <><span style={s.labelPill}>{fmt(currentLabel)}</span><span style={s.labelSub}>{sampleCount} this session</span></>
+                      : <span style={s.labelEmpty}>Select a sign below to record</span>}
+                  </div>
+                  <button style={{ ...s.btn, ...(recording ? s.btnDanger : s.btnRecord) }}
+                    onClick={recording ? stopRecording : ()=>currentLabel&&startRecording(currentLabel)}
+                    disabled={!connected||(!recording&&!currentLabel)}>
+                    {recording ? "■ Stop" : "● Record"}
+                  </button>
                 </div>
-                <div style={s.trainLog} ref={trainLogRef}>
-                  {trainLog.map((line, i) => (
-                    <div key={i} style={s.trainLogLine}>{line}</div>
+              </div>
+
+              {/* Stats + save */}
+              <div style={s.panel}>
+                <div style={s.statsRow}>
+                  <Stat num={totalSamples} label="Total" />
+                  <Stat num={Object.keys(classStats).length} label="Classes" />
+                  <Stat num={recording ? sampleCount : "—"} label="Session" />
+                </div>
+                <Divider />
+                <div style={{ display:"flex", gap:8 }}>
+                  <button style={{ ...s.btn, ...s.btnPrimary, flex:1 }} onClick={handleSave} disabled={!connected||totalSamples===0}>
+                    Save CSV
+                  </button>
+                  <button style={{ ...s.btn, ...s.btnPrimary }} onClick={handleTrain} disabled={!connected||training||totalSamples===0}>
+                    {training ? "⏳ Training…" : "▶ Train Model"}
+                  </button>
+                </div>
+                {saveMsg && <div style={s.saveMsg}>{saveMsg}</div>}
+                {training && <div style={s.warnMsg}>Training in progress — don't close the server.</div>}
+                {showTrainLog && trainLog.length > 0 && (
+                  <TrainLog lines={trainLog} done={!training} onClose={()=>setShowTrainLog(false)} ref={trainLogRef} />
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              {/* Motion camera */}
+              <CamView frame={motionFrame} active={motionActive} numHands={motionNumHands}>
+                {motionActive && (
+                  <div style={s.motionBar}>
+                    <div style={{
+                      height:"100%", width:`${motionProgress*100}%`,
+                      background: motionState==="recording" ? "#ef4444" : motionState==="done" ? "#2e7d32" : "transparent",
+                      transition:"width 0.08s linear",
+                    }} />
+                  </div>
+                )}
+                {motionState==="recording" && (
+                  <div style={s.recBadge}>
+                    <span style={{ ...s.recDot, animation:"blink 1s step-end infinite" }} />
+                    {selectedSign ? fmt(selectedSign) : "Recording"} · <span style={{ fontFamily:"'IBM Plex Mono', monospace" }}>{motionFrames}/{SEQ_LENGTH}</span>
+                  </div>
+                )}
+              </CamView>
+
+              {/* Auto-advance controls */}
+              <div style={s.panel}>
+                <div style={s.sectionLabel}>Target sign</div>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:5, marginBottom:10 }}>
+                  {MOTION_SIGNS.map(({ key, label }) => (
+                    <button key={key}
+                      style={{ ...s.btn, ...(selectedSign===key ? s.btnPrimary : {}), fontSize:12, padding:"4px 10px" }}
+                      onClick={()=>setSelectedSign(selectedSign===key ? "" : key)}
+                      disabled={autoRunning}>
+                      {label}
+                    </button>
                   ))}
                 </div>
-              </div>
-            )}
-          </div>
 
-          {/* Tips */}
-          <div style={s.tipsBox}>
-            <div style={s.tipsTitle}>Tips for good data</div>
-            <ul style={s.tipsList}>
-              <li>Aim for 200+ samples per sign</li>
-              <li>Vary hand angle & position slightly</li>
-              <li>Use consistent, even lighting</li>
-              <li>Record in same conditions you'll use the translator</li>
-              <li>After collecting, run <code style={s.code}>python train_model.py</code></li>
-            </ul>
-          </div>
+                {/* Auto-advance burst */}
+                <div style={s.sectionLabel}>Auto-advance mode</div>
+                <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8 }}>
+                  <span style={{ fontSize:13, color:"#555550" }}>Reps per burst:</span>
+                  {[3,5,10,20].map(n => (
+                    <button key={n}
+                      style={{ ...s.btn, ...(autoReps===n ? s.btnPrimary : {}), fontSize:12, padding:"4px 10px" }}
+                      onClick={()=>setAutoReps(n)} disabled={autoRunning}>
+                      {n}
+                    </button>
+                  ))}
+                </div>
+                <div style={s.recRow}>
+                  <div style={{ flex:1 }}>
+                    {autoRunning
+                      ? <span style={s.labelPill}>{autoDone} / {autoReps} recorded</span>
+                      : selectedSign
+                        ? <span style={s.labelPill}>{fmt(selectedSign)} selected</span>
+                        : <span style={s.labelEmpty}>Select a sign above, then start burst</span>}
+                  </div>
+                  {!autoRunning
+                    ? <button style={{ ...s.btn, ...s.btnRecord }}
+                        onClick={startAutoBurst} disabled={!motionConnected||!selectedSign}>
+                        ▶ Start Burst
+                      </button>
+                    : <button style={{ ...s.btn, ...s.btnDanger }} onClick={stopAuto}>■ Stop</button>}
+                </div>
+                <p style={s.helpText}>
+                  Burst mode records {autoReps} sequences automatically — just keep signing. Sign completes, saves, and re-records without pressing anything.
+                </p>
+              </div>
+
+              {/* Manual recording (when not in burst) */}
+              {!autoRunning && (
+                <div style={s.panel}>
+                  <div style={s.sectionLabel}>Manual recording</div>
+                  <div style={s.recRow}>
+                    <div style={{ flex:1, display:"flex", gap:6 }}>
+                      {motionState !== "recording" && (
+                        <button style={{ ...s.btn, ...s.btnRecord }} onClick={startMotionRec} disabled={!motionConnected}>● Record</button>
+                      )}
+                      {motionState === "recording" && (
+                        <button style={{ ...s.btn, ...s.btnDanger }} onClick={stopMotionRec}>■ Stop</button>
+                      )}
+                      {motionState === "done" && hasPending && (
+                        <button style={{ ...s.btn, color:"#b91c1c", border:"1px solid #fca5a5" }} onClick={discardMotion}>Discard</button>
+                      )}
+                    </div>
+                    {motionState === "done" && hasPending && (
+                      <button style={{ ...s.btn, ...s.btnPrimary }} onClick={saveMotion} disabled={!selectedSign}>
+                        Save{selectedSign ? ` as ${fmt(selectedSign)}` : " (select sign)"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {lastSaved && (
+                <div style={lastSaved.deleted ? s.warnMsg : s.saveMsg}>
+                  {lastSaved.deleted
+                    ? `Deleted all ${fmt(lastSaved.label)} motion data`
+                    : `Saved — ${lastSaved.count} sequences for ${fmt(lastSaved.label)}`}
+                </div>
+              )}
+
+              {/* Stats + train */}
+              <div style={s.panel}>
+                <div style={s.statsRow}>
+                  <Stat num={Object.values(motionCountMap).reduce((a,b)=>a+b,0)} label="Sequences" />
+                  <Stat num={Object.keys(motionCountMap).length} label="Signs" />
+                </div>
+                <Divider />
+                <button style={{ ...s.btn, ...s.btnPrimary, ...(motionTraining?{opacity:0.7}:{}) }}
+                  onClick={trainMotion} disabled={!motionConnected||motionTraining}>
+                  {motionTraining ? "⏳ Training…" : "▶ Train Motion Model"}
+                </button>
+                {motionTraining && <div style={s.warnMsg}>Training — don't close the server.</div>}
+                {showMotionLog && motionTrainLog.length > 0 && (
+                  <TrainLog lines={motionTrainLog} done={!motionTraining} onClose={()=>setShowMotionLog(false)} ref={motionLogRef} />
+                )}
+              </div>
+            </>
+          )}
         </div>
 
-        {/* Right: sign selector */}
+        {/* ── Right column: sign grid ── */}
         <div style={s.rightCol}>
           <div style={s.tabs}>
-            <button
-              style={{ ...s.tabBtn, ...(tab === "letters" ? s.tabBtnActive : {}) }}
-              onClick={() => setTab("letters")}
-            >
-              Letters (A–Z)
-            </button>
-            <button
-              style={{ ...s.tabBtn, ...(tab === "words" ? s.tabBtnActive : {}) }}
-              onClick={() => setTab("words")}
-            >
-              Word Signs
-            </button>
-            <div style={{ flex: 1 }} />
+            {["letters","words","motion"].map(t => (
+              <button key={t} style={{ ...s.tab, ...(tab===t ? s.tabActive : {}) }}
+                onClick={()=>handleTabChange(t)}>
+                {t === "letters" ? "Letters A–Z" : t === "words" ? "Word Signs" : "Motion Signs"}
+              </button>
+            ))}
+            <div style={{ flex:1 }} />
             {tab === "words" && (
-              <button
-                style={{ ...s.btn, ...s.btnPrimary, fontSize: 12, padding: "5px 12px", margin: "6px 0" }}
-                onClick={() => { setNewSignInput(""); setNewSignError(""); setShowAddSign(true); }}
-              >
-                + Add Sign
+              <button style={{ ...s.btn, ...s.btnPrimary, fontSize:12, padding:"4px 12px", margin:"6px 0" }}
+                onClick={()=>{ setNewSignInput(""); setNewSignError(""); setShowAddSign(true); }}>
+                + Add
               </button>
             )}
           </div>
 
-          <div style={s.signGrid}>
-            {(tab === "letters" ? LETTERS : WORD_SIGNS).map((label) => {
-              const count   = samplesForLabel(label);
-              const pct     = Math.min(count / TARGET, 1);
-              const isActive = currentLabel === label;
-              return (
-                <button
-                  key={label}
-                  style={{
-                    ...s.signBtn,
-                    ...(isActive ? s.signBtnActive : {}),
-                    ...(count >= TARGET ? s.signBtnDone : {}),
-                  }}
-                  onClick={() => {
-                    setCurrentLabel(label);
-                    if (recording) send({ action: "stop_recording" });
-                    setRecording(false);
-                  }}
-                  disabled={!connected}
-                >
-                  <span style={s.signBtnLabel}>{formatLabel(label)}</span>
-                  <div style={s.signBtnBar}>
-                    <div style={{ ...s.signBtnFill, width: `${pct * 100}%`, background: count >= TARGET ? "#2e7d32" : "#1a1a1a" }} />
+          {tab !== "motion" ? (
+            <div style={s.grid}>
+              {(tab==="letters" ? LETTERS : WORD_SIGNS).map(label => {
+                const count = classStats[label] || 0;
+                const pct   = Math.min(count/STATIC_TARGET, 1);
+                const isActive = currentLabel === label;
+                const isTrimming = trimLabel === label;
+                return (
+                  <div key={label} style={s.signCell}>
+                    <button
+                      style={{ ...s.signBtn, ...(isActive ? s.signBtnActive : {}), ...(count>=STATIC_TARGET ? s.signBtnDone : {}) }}
+                      onClick={()=>{ setCurrentLabel(label); if(recording) send({ action:"stop_recording" }); setRecording(false); setTrimLabel(""); }}
+                      disabled={!connected}>
+                      <span style={s.signLabel}>{fmt(label)}</span>
+                      <div style={s.bar}><div style={{ ...s.barFill, width:`${pct*100}%`, background:count>=STATIC_TARGET?"#2e7d32":"#1a1a1a" }} /></div>
+                      <span style={s.signCount}>{count}</span>
+                    </button>
+                    {/* Delete button — appears on hover via state */}
+                    {!isTrimming
+                      ? <button style={s.deleteBtn} title={`Delete all ${fmt(label)} data`}
+                          onClick={e=>{ e.stopPropagation(); setTrimLabel(label); }}
+                          disabled={!connected||count===0}>✕</button>
+                      : <div style={s.confirmDelete}>
+                          <span style={{ fontSize:10, color:"#b91c1c" }}>Delete {count} rows?</span>
+                          <button style={{ ...s.btn, background:"#b91c1c", color:"#fff", border:"none", fontSize:11, padding:"2px 7px" }}
+                            onClick={()=>handleTrimLabel(label)}>Yes</button>
+                          <button style={{ ...s.btn, fontSize:11, padding:"2px 7px" }}
+                            onClick={()=>setTrimLabel("")}>No</button>
+                        </div>
+                    }
                   </div>
-                  <span style={s.signBtnCount}>{count}</span>
-                </button>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div style={s.grid}>
+              {MOTION_SIGNS.map(({ key, label, desc }) => {
+                const count   = motionCountMap[key] || 0;
+                const pct     = Math.min(count/MOTION_TARGET, 1);
+                const isSel   = selectedSign === key;
+                const isTrim  = motionTrimLabel === key;
+                return (
+                  <div key={key} style={s.signCell}>
+                    <button title={desc}
+                      style={{ ...s.signBtn, ...(isSel ? s.signBtnActive : {}), ...(count>=MOTION_TARGET ? s.signBtnDone : {}) }}
+                      onClick={()=>setSelectedSign(isSel ? "" : key)}>
+                      <span style={s.signLabel}>{label}</span>
+                      <div style={s.bar}><div style={{ ...s.barFill, width:`${pct*100}%`, background:count>=MOTION_TARGET?"#2e7d32":"#1a1a1a" }} /></div>
+                      <span style={s.signCount}>{count}/{MOTION_TARGET}</span>
+                    </button>
+                    {!isTrim
+                      ? <button style={s.deleteBtn} title={`Delete all ${label} motion data`}
+                          onClick={e=>{ e.stopPropagation(); setMotionTrimLabel(key); }}
+                          disabled={!motionConnected||count===0}>✕</button>
+                      : <div style={s.confirmDelete}>
+                          <span style={{ fontSize:10, color:"#b91c1c" }}>Delete {count} seqs?</span>
+                          <button style={{ ...s.btn, background:"#b91c1c", color:"#fff", border:"none", fontSize:11, padding:"2px 7px" }}
+                            onClick={()=>trimMotionLabel(key)}>Yes</button>
+                          <button style={{ ...s.btn, fontSize:11, padding:"2px 7px" }}
+                            onClick={()=>setMotionTrimLabel("")}>No</button>
+                        </div>
+                    }
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
 
-      {/* ── Add Sign Modal ── */}
+      {/* Add sign modal */}
       {showAddSign && (
-        <div style={s.overlay} onClick={() => setShowAddSign(false)}>
-          <div style={s.modal} onClick={e => e.stopPropagation()}>
-            <div style={s.modalHeader}>
-              <span style={s.modalTitle}>Add a new sign to collect</span>
-              <button style={s.modalClose} onClick={() => setShowAddSign(false)}>✕</button>
+        <div style={s.overlay} onClick={()=>setShowAddSign(false)}>
+          <div style={s.modal} onClick={e=>e.stopPropagation()}>
+            <div style={s.modalHead}>
+              <span style={{ fontSize:15, fontWeight:600 }}>Add a new sign</span>
+              <button style={{ background:"none", border:"none", fontSize:16, color:"#888880", cursor:"pointer" }} onClick={()=>setShowAddSign(false)}>✕</button>
             </div>
-            <div style={s.modalBody}>
-              <label style={s.fieldLabel}>Word or phrase</label>
-              <input
-                style={s.fieldInput}
-                type="text"
-                placeholder="e.g. bathroom, i love you"
+            <div style={{ padding:"16px 18px 14px", display:"flex", flexDirection:"column", gap:10 }}>
+              <label style={{ fontSize:12, fontWeight:600, color:"#555550" }}>Word or phrase</label>
+              <input style={s.input} type="text" placeholder="e.g. bathroom, thank you"
                 value={newSignInput}
-                onChange={e => { setNewSignInput(e.target.value); setNewSignError(""); }}
-                onKeyDown={e => e.key === "Enter" && handleAddSign()}
-                autoFocus
-              />
-              {newSignInput && (
-                <div style={s.fieldPreview}>
-                  Label will be: <strong>{wordToLabel(newSignInput)}</strong>
-                </div>
-              )}
-              {newSignError && <div style={s.fieldError}>{newSignError}</div>}
-              <div style={s.modalFooter}>
+                onChange={e=>{ setNewSignInput(e.target.value); setNewSignError(""); }}
+                onKeyDown={e=>e.key==="Enter"&&handleAddSign()} autoFocus />
+              {newSignInput && <div style={{ fontSize:11, color:"#555550", fontFamily:"'IBM Plex Mono', monospace", background:"#f0f0eb", padding:"4px 8px" }}>Label: <strong>{wordToLabel(newSignInput)}</strong></div>}
+              {newSignError && <div style={{ fontSize:12, color:"#b91c1c" }}>{newSignError}</div>}
+              <div style={{ display:"flex", gap:8, marginTop:4 }}>
                 <button style={{ ...s.btn, ...s.btnPrimary }} onClick={handleAddSign}>Add sign</button>
-                <button style={s.btn} onClick={() => setShowAddSign(false)}>Cancel</button>
+                <button style={s.btn} onClick={()=>setShowAddSign(false)}>Cancel</button>
               </div>
             </div>
           </div>
@@ -446,241 +567,110 @@ export default function CollectData({ onNavigate }) {
   );
 }
 
-// ── Styles ────────────────────────────────────────────────────────────────────
+// ── Small sub-components ──────────────────────────────────────────────────────
+function CamView({ frame, active, numHands, children }) {
+  return (
+    <div style={s.camWrap}>
+      {frame
+        ? <img src={`data:image/jpeg;base64,${frame}`} alt="feed" style={s.camImg} />
+        : <div style={s.camBlank}>
+            <span style={{ fontSize:28, color:"#555" }}>◻</span>
+            <span style={{ fontSize:13, color:"#888" }}>{active ? "Connecting…" : "Camera inactive"}</span>
+          </div>
+      }
+      {active && (
+        <div style={{
+          ...s.handTag,
+          background: numHands>0 ? "#e8f5e9" : "#fff8e1",
+          color: numHands>0 ? "#2e7d32" : "#f57f17",
+          border: `1px solid ${numHands>0 ? "#a5d6a7" : "#ffe082"}`,
+        }}>
+          {numHands>0 ? `${numHands} hand${numHands>1?"s":""}` : "No hands"}
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
+function FpsTag({ fps }) { return <span style={s.fpsTag}>{fps>0 ? `${fps} fps` : "—"}</span>; }
+function StatusDot({ on }) { return <span style={{ width:8, height:8, borderRadius:"50%", background:on?"#2e7d32":"#9e9e9e", display:"inline-block" }} />; }
+function Stat({ num, label }) {
+  return (
+    <div style={{ flex:1, display:"flex", flexDirection:"column", gap:2, paddingRight:14, borderRight:`1px solid #d4d4d0`, marginRight:14, lastChild:{ borderRight:"none", marginRight:0 } }}>
+      <span style={{ fontSize:22, fontWeight:600, fontFamily:"'IBM Plex Mono', monospace" }}>{num}</span>
+      <span style={{ fontSize:11, color:"#888880", textTransform:"uppercase", letterSpacing:"0.06em" }}>{label}</span>
+    </div>
+  );
+}
+function Divider() { return <div style={{ borderTop:"1px solid #d4d4d0" }} />; }
+function TrainLog({ lines, done, onClose, ref: logRef }) {
+  return (
+    <div style={{ border:"1px solid #d4d4d0", overflow:"hidden" }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"6px 10px", background:"#f0f0eb", borderBottom:"1px solid #d4d4d0" }}>
+        <span style={{ fontSize:11, fontWeight:600, color:"#555550" }}>{done ? "Training complete ✓" : "Training output"}</span>
+        <button style={{ background:"none", border:"none", fontSize:13, color:"#888880", cursor:"pointer" }} onClick={onClose}>✕</button>
+      </div>
+      <div ref={logRef} style={{ maxHeight:160, overflowY:"auto", padding:"8px 10px", background:"#1a1a1a", fontFamily:"'IBM Plex Mono', monospace", fontSize:11, lineHeight:1.6 }}>
+        {lines.map((l,i)=><div key={i} style={{ color:"#d4d4d0", whiteSpace:"pre-wrap", wordBreak:"break-all" }}>{l}</div>)}
+      </div>
+    </div>
+  );
+}
 
 const C = {
-  bg:      "#f5f5f0",
-  surface: "#ffffff",
-  border:  "#d4d4d0",
-  text:    "#1a1a1a",
-  textMid: "#555550",
-  textDim: "#888880",
+  bg:"#f5f5f0", surface:"#ffffff", border:"#d4d4d0",
+  text:"#1a1a1a", textMid:"#555550", textDim:"#888880",
 };
-
 const s = {
-  root: {
-    minHeight: "100vh",
-    background: C.bg,
-    fontFamily: "'IBM Plex Sans', system-ui, sans-serif",
-    fontSize: 14,
-    color: C.text,
-    display: "flex",
-    flexDirection: "column",
-  },
-  header: {
-    background: C.surface,
-    borderBottom: `1px solid ${C.border}`,
-    padding: "0 28px",
-    height: 52,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: 16,
-  },
-  headerLeft: { display: "flex", alignItems: "center", gap: 14 },
-  backBtn: {
-    background: "none", border: "none", fontSize: 13,
-    fontWeight: 500, color: C.textMid, padding: 0,
-  },
-  dividerV: { width: 1, height: 18, background: C.border, display: "block" },
-  headerTitle: { fontSize: 15, fontWeight: 600, color: C.text },
-  headerRight: { display: "flex", alignItems: "center", gap: 10 },
-  fpsTag: {
-    padding: "3px 9px", background: "#f0f0eb", border: `1px solid ${C.border}`,
-    fontSize: 12, fontFamily: "'IBM Plex Mono', monospace", color: C.textDim,
-  },
-  statusDot: { width: 8, height: 8, borderRadius: "50%", display: "inline-block" },
-  statusText: { fontSize: 13, color: C.textMid },
-
-  body: {
-    flex: 1,
-    display: "grid",
-    gridTemplateColumns: "480px 1fr",
-    gap: 20,
-    padding: "20px 28px 28px",
-    maxWidth: 1200,
-    width: "100%",
-    margin: "0 auto",
-    alignItems: "start",
-  },
-
-  // Camera
-  leftCol: { display: "flex", flexDirection: "column", gap: 14 },
-  camWrap: {
-    position: "relative",
-    background: "#111",
-    border: `1px solid ${C.border}`,
-    aspectRatio: "4/3",
-    overflow: "hidden",
-  },
-  camImg: { width: "100%", height: "100%", objectFit: "cover", display: "block" },
-  camBlank: {
-    height: "100%", display: "flex", flexDirection: "column",
-    alignItems: "center", justifyContent: "center", gap: 10,
-  },
-  camBlankIcon: { fontSize: 32, color: "#444" },
-  camBlankText: { color: "#666", fontSize: 13 },
-  recBadge: {
-    position: "absolute", bottom: 10, left: "50%", transform: "translateX(-50%)",
-    background: "rgba(0,0,0,0.75)", color: "#fff", fontSize: 13, fontWeight: 500,
-    padding: "6px 16px", display: "flex", alignItems: "center", gap: 8,
-    whiteSpace: "nowrap",
-  },
-  recDot: { display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: "#ef4444" },
-  recCount: { marginLeft: 8, color: "#aaa", fontFamily: "'IBM Plex Mono', monospace", fontSize: 12 },
-  handTag: {
-    position: "absolute", top: 10, right: 10, padding: "3px 10px",
-    fontSize: 12, fontWeight: 500, border: "1px solid",
-  },
-
-  recControls: {
-    background: C.surface,
-    border: `1px solid ${C.border}`,
-    padding: "14px 16px",
-  },
-  recCtrlRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 },
-  recLabelDisplay: { display: "flex", alignItems: "center", gap: 10, flex: 1 },
-  recLabelPill: {
-    padding: "3px 10px", background: "#1a1a1a", color: "#fff",
-    fontSize: 13, fontWeight: 600, letterSpacing: "0.05em",
-  },
-  recLabelSub: { fontSize: 12, color: C.textDim, fontFamily: "'IBM Plex Mono', monospace" },
-  recLabelEmpty: { fontSize: 13, color: C.textDim, fontStyle: "italic" },
-
-  statsBox: {
-    background: C.surface,
-    border: `1px solid ${C.border}`,
-    padding: "14px 16px",
-    display: "flex",
-    flexDirection: "column",
-    gap: 12,
-  },
-  statsRow: { display: "flex", gap: 0 },
-  statItem: {
-    flex: 1, display: "flex", flexDirection: "column", gap: 2,
-    paddingRight: 16, borderRight: `1px solid ${C.border}`,
-    marginRight: 16,
-  },
-  statNum: { fontSize: 22, fontWeight: 600, fontFamily: "'IBM Plex Mono', monospace", color: C.text },
-  statLabel: { fontSize: 11, color: C.textDim, textTransform: "uppercase", letterSpacing: "0.06em" },
-  saveBtnRow: { display: "flex", gap: 8 },
-  confirmRow: { display: "flex", alignItems: "center", gap: 6, flex: 1, flexWrap: "wrap" },
-  confirmText: { fontSize: 12, color: "#b91c1c", fontWeight: 500, flex: 1 },
-  saveMsg: {
-    fontSize: 12, color: "#2e7d32", padding: "6px 10px",
-    background: "#e8f5e9", border: "1px solid #a5d6a7",
-  },
-  divider: { borderTop: `1px solid ${C.border}` },
-  trainingNote: {
-    fontSize: 12, color: "#b45309", padding: "6px 10px",
-    background: "#fffbeb", border: "1px solid #fcd34d",
-  },
-  trainLogWrap: {
-    border: `1px solid ${C.border}`,
-    overflow: "hidden",
-  },
-  trainLogHeader: {
-    display: "flex", justifyContent: "space-between", alignItems: "center",
-    padding: "7px 10px", background: "#f0f0eb", borderBottom: `1px solid ${C.border}`,
-  },
-  trainLogTitle: { fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", color: C.textMid },
-  trainLogClose: {
-    background: "none", border: "none", fontSize: 13,
-    color: C.textDim, cursor: "pointer", padding: "0 2px",
-  },
-  trainLog: {
-    maxHeight: 180, overflowY: "auto", padding: "8px 10px",
-    background: "#1a1a1a", fontFamily: "'IBM Plex Mono', monospace",
-    fontSize: 11, lineHeight: 1.6,
-  },
-  trainLogLine: { color: "#d4d4d0", whiteSpace: "pre-wrap", wordBreak: "break-all" },
-
-  // Modal
-  overlay: {
-    position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)",
-    display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100,
-  },
-  modal: {
-    background: C.surface, border: `1px solid ${C.border}`,
-    width: "100%", maxWidth: 420, boxShadow: "0 8px 32px rgba(0,0,0,0.12)",
-  },
-  modalHeader: {
-    display: "flex", alignItems: "center", justifyContent: "space-between",
-    padding: "14px 18px", borderBottom: `1px solid ${C.border}`,
-  },
-  modalTitle:  { fontSize: 15, fontWeight: 600 },
-  modalClose:  { background: "none", border: "none", fontSize: 16, color: C.textDim, cursor: "pointer" },
-  modalBody:   { padding: "18px 18px 14px" },
-  modalFooter: { display: "flex", gap: 8, marginTop: 18 },
-  fieldLabel:  { display: "block", fontSize: 12, fontWeight: 600, color: C.textMid, marginBottom: 5 },
-  fieldInput: {
-    width: "100%", padding: "8px 10px", border: `1px solid ${C.border}`,
-    fontSize: 13, color: C.text, background: C.bg, outline: "none",
-  },
-  fieldPreview: {
-    marginTop: 7, fontSize: 12, color: C.textMid,
-    padding: "5px 8px", background: "#f0f0eb", border: `1px solid ${C.border}`,
-    fontFamily: "'IBM Plex Mono', monospace",
-  },
-  fieldError: {
-    marginTop: 7, fontSize: 12, color: "#b91c1c",
-    padding: "5px 8px", background: "#fef2f2", border: "1px solid #fca5a5",
-  },
-
-  tipsBox: {
-    border: `1px solid ${C.border}`,
-    padding: "14px 16px",
-    background: "#fafaf8",
-  },
-  tipsTitle: { fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.08em", color: C.textDim, marginBottom: 8 },
-  tipsList: { paddingLeft: 16, display: "flex", flexDirection: "column", gap: 5 },
-  code: { fontFamily: "'IBM Plex Mono', monospace", background: "#f0f0eb", padding: "1px 5px", fontSize: 11 },
-
-  // Right panel
-  rightCol: { display: "flex", flexDirection: "column", gap: 0 },
-  tabs: {
-    display: "flex",
-    borderBottomWidth: 1, borderBottomStyle: "solid", borderBottomColor: C.border,
-    marginBottom: 14,
-  },
-  tabBtn: {
-    padding: "9px 18px", background: "none", border: "none",
-    borderBottomWidth: 2, borderBottomStyle: "solid", borderBottomColor: "transparent",
-    fontSize: 13, fontWeight: 500, color: C.textMid, marginBottom: -1,
-  },
-  tabBtnActive: { borderBottomColor: "#1a1a1a", color: C.text, fontWeight: 600 },
-
-  signGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fill, minmax(100px, 1fr))",
-    gap: 6,
-  },
-  signBtn: {
-    padding: "10px 8px 8px",
-    border: `1px solid ${C.border}`,
-    background: C.surface,
-    display: "flex", flexDirection: "column", alignItems: "center", gap: 5,
-    cursor: "pointer", transition: "border-color 0.1s",
-  },
-  signBtnActive: {
-    border: "1px solid #1a1a1a",
-    background: "#fafaf8",
-  },
-  signBtnDone: {
-    border: "1px solid #a5d6a7",
-    background: "#f1f8f1",
-  },
-  signBtnLabel: { fontSize: 13, fontWeight: 600, color: C.text },
-  signBtnBar: { width: "100%", height: 3, background: "#e5e5e0", overflow: "hidden" },
-  signBtnFill: { height: "100%", transition: "width 0.3s ease" },
-  signBtnCount: { fontSize: 11, fontFamily: "'IBM Plex Mono', monospace", color: C.textDim },
-
-  // Buttons
-  btn: {
-    padding: "7px 14px", border: `1px solid ${C.border}`,
-    fontSize: 13, fontWeight: 500, background: C.surface, color: C.text,
-  },
-  btnPrimary: { background: "#1a1a1a", color: "#fff", border: "1px solid #1a1a1a" },
-  btnRecord: { background: "#1a1a1a", color: "#fff", border: "1px solid #1a1a1a", padding: "7px 20px" },
-  btnDanger: { background: "#b91c1c", color: "#fff", border: "1px solid #b91c1c", padding: "7px 20px" },
+  root: { minHeight:"100vh", background:C.bg, fontFamily:"'IBM Plex Sans', system-ui, sans-serif", fontSize:14, color:C.text, display:"flex", flexDirection:"column" },
+  header: { background:C.surface, borderBottom:`1px solid ${C.border}`, padding:"0 28px", height:52, display:"flex", alignItems:"center", justifyContent:"space-between", gap:16 },
+  hLeft: { display:"flex", alignItems:"center", gap:10 },
+  hRight: { display:"flex", alignItems:"center", gap:10 },
+  logoMark: { width:24, height:24, background:C.text, color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, fontWeight:700, flexShrink:0 },
+  logoText: { fontSize:15, fontWeight:700, letterSpacing:"-0.02em", color:C.text },
+  sep: { fontSize:16, color:C.textDim },
+  pageTitle: { fontSize:14, fontWeight:500, color:C.textMid },
+  fpsTag: { padding:"3px 9px", background:"#f0f0eb", border:`1px solid ${C.border}`, fontSize:12, fontFamily:"'IBM Plex Mono', monospace", color:C.textDim },
+  body: { flex:1, display:"grid", gridTemplateColumns:"440px 1fr", gap:20, padding:"20px 28px 28px", maxWidth:1200, width:"100%", margin:"0 auto", alignItems:"start" },
+  leftCol: { display:"flex", flexDirection:"column", gap:12 },
+  camWrap: { position:"relative", background:"#111", border:`1px solid ${C.border}`, aspectRatio:"4/3", overflow:"hidden" },
+  camImg: { width:"100%", height:"100%", objectFit:"cover", display:"block" },
+  camBlank: { height:"100%", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:8 },
+  recBadge: { position:"absolute", bottom:10, left:"50%", transform:"translateX(-50%)", background:"rgba(0,0,0,0.75)", color:"#fff", fontSize:13, fontWeight:500, padding:"5px 14px", display:"flex", alignItems:"center", gap:7, whiteSpace:"nowrap" },
+  recDot: { display:"inline-block", width:8, height:8, borderRadius:"50%", background:"#ef4444" },
+  handTag: { position:"absolute", top:8, right:8, padding:"3px 8px", fontSize:11, fontWeight:500 },
+  motionBar: { position:"absolute", bottom:0, left:0, right:0, height:4, background:"rgba(255,255,255,0.1)" },
+  panel: { background:C.surface, border:`1px solid ${C.border}`, padding:"14px 16px", display:"flex", flexDirection:"column", gap:10 },
+  recRow: { display:"flex", alignItems:"center", justifyContent:"space-between", gap:10 },
+  labelPill: { padding:"3px 10px", background:C.text, color:"#fff", fontSize:13, fontWeight:600, letterSpacing:"0.05em" },
+  labelSub: { fontSize:12, color:C.textDim, fontFamily:"'IBM Plex Mono', monospace", marginLeft:8 },
+  labelEmpty: { fontSize:13, color:C.textDim, fontStyle:"italic" },
+  statsRow: { display:"flex" },
+  sectionLabel: { fontSize:11, fontWeight:600, letterSpacing:"0.08em", textTransform:"uppercase", color:C.textDim },
+  saveMsg: { fontSize:12, color:"#2e7d32", padding:"6px 10px", background:"#e8f5e9", border:"1px solid #a5d6a7" },
+  warnMsg: { fontSize:12, color:"#b45309", padding:"6px 10px", background:"#fffbeb", border:"1px solid #fcd34d" },
+  helpText: { fontSize:12, color:C.textDim, lineHeight:1.5 },
+  rightCol: { display:"flex", flexDirection:"column" },
+  tabs: { display:"flex", borderBottom:`1px solid ${C.border}`, marginBottom:12 },
+  tab: { padding:"8px 16px", background:"none", border:"none", borderBottom:"2px solid transparent", fontSize:13, fontWeight:500, color:C.textMid, marginBottom:-1, cursor:"pointer" },
+  tabActive: { borderBottomColor:C.text, color:C.text, fontWeight:600 },
+  grid: { display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(100px, 1fr))", gap:4 },
+  signCell: { position:"relative", display:"flex", flexDirection:"column" },
+  signBtn: { padding:"10px 8px 8px", border:`1px solid ${C.border}`, background:C.surface, display:"flex", flexDirection:"column", alignItems:"center", gap:4, cursor:"pointer", width:"100%" },
+  signBtnActive: { border:`1px solid ${C.text}`, background:"#fafaf8" },
+  signBtnDone: { border:"1px solid #a5d6a7", background:"#f1f8f1" },
+  signLabel: { fontSize:13, fontWeight:600, color:C.text },
+  bar: { width:"100%", height:3, background:"#e5e5e0", overflow:"hidden" },
+  barFill: { height:"100%", transition:"width 0.3s ease" },
+  signCount: { fontSize:11, fontFamily:"'IBM Plex Mono', monospace", color:C.textDim },
+  deleteBtn: { position:"absolute", top:2, right:2, background:"none", border:"none", fontSize:10, color:C.textDim, padding:"1px 3px", lineHeight:1 },
+  confirmDelete: { display:"flex", alignItems:"center", gap:4, padding:"3px 4px", background:"#fef2f2", border:"1px solid #fca5a5", flexWrap:"wrap" },
+  btn: { padding:"7px 14px", border:`1px solid ${C.border}`, fontSize:13, fontWeight:500, background:C.surface, color:C.text },
+  btnPrimary: { background:C.text, color:"#fff", border:`1px solid ${C.text}` },
+  btnRecord: { background:C.text, color:"#fff", border:`1px solid ${C.text}`, padding:"7px 18px" },
+  btnDanger: { background:"#b91c1c", color:"#fff", border:"1px solid #b91c1c", padding:"7px 18px" },
+  overlay: { position:"fixed", inset:0, background:"rgba(0,0,0,0.4)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:100 },
+  modal: { background:C.surface, border:`1px solid ${C.border}`, width:"100%", maxWidth:400, boxShadow:"0 8px 32px rgba(0,0,0,0.12)" },
+  modalHead: { display:"flex", alignItems:"center", justifyContent:"space-between", padding:"13px 18px", borderBottom:`1px solid ${C.border}` },
+  input: { width:"100%", padding:"8px 10px", border:`1px solid ${C.border}`, fontSize:13, color:C.text, background:C.bg, outline:"none" },
 };

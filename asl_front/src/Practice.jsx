@@ -1,199 +1,35 @@
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 
 const C = {
-  bg:       "#f5f5f0",
-  surface:  "#ffffff",
+  bg:      "#f5f5f0",
+  surface: "#ffffff",
   border:  "#d4d4d0",
-  text:     "#1a1a1a",
-  textMid:  "#555550",
-  textDim:  "#888880",
-  primary:  "#1a1a1a",
-  correct:  "#166534",
-  wrong:    "#b91c1c",
+  text:    "#1a1a1a",
+  textMid: "#555550",
+  textDim: "#888880",
 };
 
 const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
-
-// Put A.png, B.png, … Z.png in public/practice/ to show sign images. Until then, placeholder is shown.
 const PRACTICE_IMAGE_BASE = "/practice";
-const TEST_QUESTION_COUNT = 5;
-const QUESTION_TIME_SECONDS = 10;
+const TEST_QUESTION_COUNT = 10;
+const QUESTION_TIME_SECONDS = 12;
+const WS_SIGN_IT = "ws://localhost:8765";
 
-const CIRCLE_TIMER_SIZE = 160;
-const CIRCLE_STROKE = 14;
-const CIRCLE_R = (CIRCLE_TIMER_SIZE - CIRCLE_STROKE) / 2;
-const CIRCLE_CIRCUMFERENCE = 2 * Math.PI * CIRCLE_R;
+const CIRCLE_SIZE = 120;
+const CIRCLE_STROKE = 8;
+const CIRCLE_R = (CIRCLE_SIZE - CIRCLE_STROKE) / 2;
+const CIRCLE_C = 2 * Math.PI * CIRCLE_R;
 
-function letterImageUrl(letter) {
-  return `${PRACTICE_IMAGE_BASE}/${letter}.png`;
-}
-
-function LetterImage({ letter, style = {} }) {
-  const [usePlaceholder, setUsePlaceholder] = useState(false);
-  const src = letterImageUrl(letter);
-  if (usePlaceholder) {
-    return (
-      <div style={{ ...s.signImagePlaceholder, ...style }} title="Add public/practice/[letter].png for real images">
-        <span style={s.signImagePlaceholderText}>Sign image</span>
-        <span style={s.signImagePlaceholderLetter}>{letter}</span>
-      </div>
-    );
-  }
-  return (
-    <img
-      src={src}
-      alt={`ASL sign for ${letter}`}
-      style={{ ...s.signImage, ...style }}
-      onError={() => setUsePlaceholder(true)}
-    />
-  );
-}
-
-// Brief hint for each letter (ASL finger spelling)
-const LETTER_HINTS = {
-  A: "Fist, thumb to the side", B: "Flat hand, fingers together", C: "Curved C shape",
-  D: "Point up, others in", E: "Fingers curved in", F: "OK sign, thumb & index",
-  G: "Point sideways", H: "Index & middle, point sideways", I: "Pinky up",
-  J: "Pinky traces J", K: "V with thumb", L: "L shape",
-  M: "Three fingers down on thumb", N: "Two fingers on thumb", O: "O shape",
-  P: "K with finger down", Q: "G pointing down", R: "R fingers crossed",
-  S: "Fist, thumb in front", T: "Thumb between index & middle", U: "Two fingers up",
-  V: "V shape", W: "Three fingers up", X: "Index bent", Y: "Thumb & pinky out",
-  Z: "Z in the air",
-};
-
-const s = {
-  root: {
-    minHeight: "100vh", background: C.bg, fontFamily: "'IBM Plex Sans', system-ui, sans-serif",
-    color: C.text, display: "flex", flexDirection: "column",
-  },
-  header: {
-    background: C.surface, borderBottom: `1px solid ${C.border}`,
-    padding: "0 20px", height: 52, display: "flex", alignItems: "center", justifyContent: "space-between",
-  },
-  backBtn: {
-    padding: "8px 14px", fontSize: 14, fontWeight: 500, color: C.textMid,
-    background: "none", border: `1px solid ${C.border}`, borderRadius: 6, cursor: "pointer",
-  },
-  headerTitle: { fontSize: 18, fontWeight: 600, color: C.text },
-  main: {
-    flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-    padding: 24,
-  },
-  modeGrid: {
-    display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 20, maxWidth: 420,
-  },
-  modeCard: {
-    background: C.surface, border: `2px solid ${C.border}`, borderRadius: 12,
-    padding: "32px 24px", textAlign: "center", cursor: "pointer",
-    transition: "border-color 0.2s, box-shadow 0.2s",
-  },
-  modeIcon: { fontSize: 40, marginBottom: 12 },
-  modeLabel: { fontSize: 18, fontWeight: 600, color: C.text, marginBottom: 6 },
-  modeDesc: { fontSize: 13, color: C.textDim },
-  // Flashcards
-  cardWrap: {
-    width: "100%", maxWidth: 340, perspective: 1000,
-  },
-  cardInner: {
-    position: "relative", width: "100%", minHeight: 220,
-    transformStyle: "preserve-3d",
-  },
-  cardFace: {
-    position: "absolute", inset: 0,
-    background: C.surface, border: `2px solid ${C.border}`, borderRadius: 12,
-    display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-    padding: 28, backfaceVisibility: "hidden",
-    boxShadow: "0 4px 20px rgba(0,0,0,0.08)",
-  },
-  cardBack: { transform: "rotateY(180deg)" },
-  signImage: {
-    width: "100%", maxWidth: 200, height: 160, objectFit: "contain", borderRadius: 8,
-    background: "transparent",
-  },
-  signImageLarge: {
-    maxWidth: 320, height: 260, objectFit: "contain",
-  },
-  signImagePlaceholder: {
-    width: "100%", maxWidth: 200, height: 160, background: "transparent", borderRadius: 8,
-    display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
-    border: `2px dashed ${C.border}`,
-  },
-  signImagePlaceholderLarge: {
-    maxWidth: 320, height: 260,
-  },
-  signImagePlaceholderText: { fontSize: 12, color: C.textDim },
-  signImagePlaceholderLetter: { fontSize: 48, fontWeight: 700, color: C.textDim, marginTop: 4 },
-  cardLetter: { fontSize: 72, fontWeight: 700, color: C.primary, lineHeight: 1 },
-  cardPrompt: { fontSize: 15, color: C.textMid, marginTop: 12 },
-  cardHint: { fontSize: 14, color: C.textDim, marginTop: 12, textAlign: "center" },
-  navRow: {
-    display: "flex", alignItems: "center", justifyContent: "center", gap: 16, marginTop: 28,
-  },
-  navBtn: {
-    padding: "10px 20px", fontSize: 15, fontWeight: 500, background: C.surface,
-    border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", color: C.text,
-  },
-  progress: { fontSize: 14, color: C.textDim, marginTop: 12 },
-  // Test (larger UI)
-  questionBox: {
-    background: C.surface, border: `2px solid ${C.border}`, borderRadius: 16,
-    padding: 36, maxWidth: 520, width: "100%",
-  },
-  questionImageWrap: { marginBottom: 28, display: "flex", justifyContent: "center" },
-  questionText: { fontSize: 22, fontWeight: 600, color: C.text, marginBottom: 24 },
-  optionsGrid: { display: "flex", flexDirection: "column", gap: 14 },
-  optionBtn: {
-    padding: "18px 24px", fontSize: 20, textAlign: "left",
-    background: C.surface, border: `2px solid ${C.border}`, borderRadius: 10,
-    cursor: "pointer", fontWeight: 500, color: C.text,
-    transition: "border-color 0.2s, background 0.2s",
-  },
-  optionCorrect: { borderColor: C.correct, background: "#f0fdf4" },
-  optionWrong: { borderColor: C.wrong, background: "#fef2f2" },
-  resultBox: {
-    textAlign: "center", padding: 40,
-  },
-  resultScore: { fontSize: 48, fontWeight: 700, color: C.primary, marginBottom: 12 },
-  resultText: { fontSize: 18, color: C.textMid, marginBottom: 24 },
-  againBtn: {
-    padding: "14px 28px", fontSize: 16, fontWeight: 600, color: C.surface, background: C.primary,
-    border: "none", borderRadius: 8, cursor: "pointer",
-  },
-  // Circle countdown timer
-  circleTimerWrap: {
-    display: "flex",
-    justifyContent: "center",
-    alignItems: "center",
-    marginBottom: 28,
-  },
-  circleTimerSvg: {
-    transform: "rotate(-90deg)",
-    width: CIRCLE_TIMER_SIZE,
-    height: CIRCLE_TIMER_SIZE,
-  },
-  circleTimerBg: {
-    fill: "none",
-    stroke: C.border,
-    strokeWidth: CIRCLE_STROKE,
-  },
-  circleTimerFill: {
-    fill: "none",
-    stroke: C.primary,
-    strokeWidth: CIRCLE_STROKE,
-    strokeLinecap: "round",
-    transition: "stroke-dashoffset 0.3s ease",
-  },
-  circleTimerText: {
-    position: "absolute",
-    left: "50%",
-    top: "50%",
-    transform: "translate(-50%, -50%)",
-    fontSize: 42,
-    fontWeight: 700,
-    fontFamily: "'IBM Plex Mono', monospace",
-    color: C.text,
-  },
+const HINTS = {
+  A:"Fist, thumb to side", B:"Flat hand, fingers up", C:"Curved C shape",
+  D:"Point up, others curve", E:"Fingers curled in", F:"OK sign shape",
+  G:"Point sideways", H:"Two fingers sideways", I:"Pinky up",
+  J:"Pinky traces J", K:"V with thumb out", L:"L shape",
+  M:"Three fingers on thumb", N:"Two fingers on thumb", O:"O shape",
+  P:"K pointing down", Q:"G pointing down", R:"Fingers crossed",
+  S:"Fist, thumb in front", T:"Thumb between fingers", U:"Two fingers up",
+  V:"V shape", W:"Three fingers up", X:"Index hooked",
+  Y:"Thumb & pinky out", Z:"Index traces Z",
 };
 
 function shuffle(arr) {
@@ -205,322 +41,516 @@ function shuffle(arr) {
   return a;
 }
 
-function formatTime(seconds) {
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
-  return `${m}:${s.toString().padStart(2, "0")}`;
+function fmt(s) {
+  const m = Math.floor(s / 60), sec = s % 60;
+  return `${m}:${sec.toString().padStart(2,"0")}`;
 }
 
-export default function Practice({ onNavigate }) {
-  const [mode, setMode] = useState(null); // null | "flashcards" | "test"
-  const [flashcardIndex, setFlashcardIndex] = useState(0);
-  const [flipped, setFlipped] = useState(false);
-  const [flashcardOrder, setFlashcardOrder] = useState(() => shuffle([...LETTERS]));
-  // Test state
-  const [testOrder, setTestOrder] = useState([]);
-  const [testIndex, setTestIndex] = useState(0);
-  const [testCorrect, setTestCorrect] = useState(0);
-  const [testAnswered, setTestAnswered] = useState(false);
-  const [testPicked, setTestPicked] = useState(null);
-  const [testDone, setTestDone] = useState(false);
-  const [testElapsed, setTestElapsed] = useState(0);
-  const [countdown, setCountdown] = useState(QUESTION_TIME_SECONDS);
-  const testStartRef = useRef(null);
-  const nextQuestionRef = useRef(null);
+function LetterImage({ letter, style: extraStyle = {} }) {
+  const [err, setErr] = useState(false);
+  if (err) return (
+    <div style={{ ...imgStyle.placeholder, ...extraStyle }}>
+      <span style={imgStyle.placeholderLetter}>{letter}</span>
+    </div>
+  );
+  return <img src={`${PRACTICE_IMAGE_BASE}/${letter}.png`} alt={`ASL ${letter}`}
+    style={{ ...imgStyle.img, ...extraStyle }} onError={() => setErr(true)} />;
+}
+const imgStyle = {
+  img: { width: "100%", maxWidth: 200, height: 160, objectFit: "contain" },
+  placeholder: { width: "100%", maxWidth: 200, height: 160, display: "flex", alignItems: "center", justifyContent: "center", border: `2px dashed ${C.border}` },
+  placeholderLetter: { fontSize: 56, fontWeight: 700, color: C.textDim },
+};
 
-  const startFlashcards = () => {
-    setFlashcardOrder(shuffle([...LETTERS]));
-    setFlashcardIndex(0);
-    setFlipped(false);
-  };
-
-  const startTest = () => {
-    setTestOrder(shuffle([...LETTERS]).slice(0, TEST_QUESTION_COUNT));
-    setTestIndex(0);
-    setTestCorrect(0);
-    setTestAnswered(false);
-    setTestPicked(null);
-    setTestDone(false);
-    setTestElapsed(0);
-    setCountdown(QUESTION_TIME_SECONDS);
-    testStartRef.current = Date.now();
-  };
-
-  // Test elapsed timer (total time)
-  useEffect(() => {
-    if (mode !== "test" || testDone || testOrder.length === 0) return;
-    const tick = () => setTestElapsed(Math.floor((Date.now() - testStartRef.current) / 1000));
-    const id = setInterval(tick, 1000);
-    return () => clearInterval(id);
-  }, [mode, testDone, testOrder.length]);
-
-  // Per-question 10s countdown (circle timer); on 0: play fail sound, then auto-advance
-  useEffect(() => {
-    if (mode !== "test" || testDone || testOrder.length === 0 || testAnswered) return;
-    const id = setInterval(() => {
-      setCountdown((c) => {
-        if (c <= 1) {
-          setTestAnswered(true);
-          setTestPicked(null);
-          setTimeout(() => nextQuestionRef.current?.(), 1500);
-          return 0;
-        }
-        return c - 1;
-      });
-    }, 1000);
-    return () => clearInterval(id);
-  }, [mode, testDone, testOrder.length, testAnswered, testIndex]);
-
-  const testQuestion = testOrder[testIndex];
-  const testOptions = useMemo(() => {
-    if (!testQuestion) return [];
-    const others = LETTERS.filter((l) => l !== testQuestion);
-    const wrong = shuffle(others).slice(0, 3);
-    return shuffle([testQuestion, ...wrong]);
-  }, [testQuestion]);
-
-  const handleTestAnswer = (letter) => {
-    if (testAnswered) return;
-    setTestAnswered(true);
-    setTestPicked(letter);
-    if (letter === testQuestion) {
-      setTestCorrect((c) => c + 1);
-    }
-  };
-
-  const handleTestNext = () => {
-    if (testIndex + 1 >= testOrder.length) {
-      setTestElapsed(Math.floor((Date.now() - testStartRef.current) / 1000));
-      setTestDone(true);
-    } else {
-      setTestIndex((i) => i + 1);
-      setTestAnswered(false);
-      setTestPicked(null);
-      setCountdown(QUESTION_TIME_SECONDS);
-    }
-  };
-  nextQuestionRef.current = handleTestNext;
-
-  const handleBack = () => {
-    if (mode === null) {
-      onNavigate?.("home");
-    } else {
-      setMode(null);
-      setFlipped(false);
-      setFlashcardIndex(0);
-    }
-  };
-
-  if (mode === null) {
-    return (
-      <div style={s.root}>
-        <style>{`
-          @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap');
-          body { background: ${C.bg}; }
-          button:hover { opacity: 0.9; }
-          button:focus-visible { outline: 2px solid ${C.primary}; outline-offset: 2px; }
-        `}</style>
-        <header style={s.header}>
-          <button style={s.backBtn} onClick={handleBack}>← Back</button>
-          <span style={s.headerTitle}>Practice A–Z</span>
-          <div style={{ width: 70 }} />
-        </header>
-        <main style={s.main}>
-          <p style={{ fontSize: 16, color: C.textMid, marginBottom: 28 }}>
-            Choose a way to practice the ASL alphabet
-          </p>
-          <div style={s.modeGrid}>
-            <button
-              style={s.modeCard}
-              onClick={() => { setMode("flashcards"); startFlashcards(); }}
-              onMouseEnter={(e) => { e.currentTarget.style.borderColor = C.primary; e.currentTarget.style.boxShadow = "0 8px 24px rgba(0,0,0,0.1)"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.boxShadow = "none"; }}
-            >
-              <div style={s.modeIcon}>🃏</div>
-              <div style={s.modeLabel}>Flashcards</div>
-              <div style={s.modeDesc}>Flip through letters A–Z and see the sign hint</div>
-            </button>
-            <button
-              style={s.modeCard}
-              onClick={() => { setMode("test"); startTest(); }}
-              onMouseEnter={(e) => { e.currentTarget.style.borderColor = C.primary; e.currentTarget.style.boxShadow = "0 8px 24px rgba(0,0,0,0.1)"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.borderColor = C.border; e.currentTarget.style.boxShadow = "none"; }}
-            >
-              <div style={s.modeIcon}>✏️</div>
-              <div style={s.modeLabel}>Test</div>
-              <div style={s.modeDesc}>Multiple choice: pick the correct letter (5 questions)</div>
-            </button>
-          </div>
-        </main>
-      </div>
-    );
-  }
-
-  if (mode === "flashcards") {
-    const letter = flashcardOrder[flashcardIndex];
-    const hint = letter ? LETTER_HINTS[letter] : "";
-    const atEnd = flashcardIndex >= 25;
-    return (
-      <div style={s.root}>
-        <header style={s.header}>
-          <button style={s.backBtn} onClick={handleBack}>← Back</button>
-          <span style={s.headerTitle}>Flashcards</span>
-          <span style={{ fontSize: 14, color: C.textDim }}>{flashcardIndex + 1} / 26</span>
-        </header>
-        <main style={s.main}>
-          {letter ? (
-            <>
-              <div
-                style={s.cardWrap}
-                onClick={() => setFlipped((f) => !f)}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => e.key === "Enter" && setFlipped((f) => !f)}
-              >
-                <div style={{ ...s.cardInner, transform: flipped ? "rotateY(180deg)" : "none" }}>
-                  <div style={s.cardFace}>
-                    <LetterImage letter={letter} />
-                    <div style={s.cardPrompt}>What letter? (tap to flip)</div>
-                  </div>
-                  <div style={{ ...s.cardFace, ...s.cardBack }}>
-                    <div style={s.cardLetter}>{letter}</div>
-                    <div style={s.cardHint}>{hint}</div>
-                  </div>
-                </div>
-              </div>
-              <div style={s.navRow}>
-                <button
-                  style={s.navBtn}
-                  onClick={(e) => { e.stopPropagation(); setFlashcardIndex((i) => Math.max(0, i - 1)); setFlipped(false); }}
-                  disabled={flashcardIndex === 0}
-                >
-                  ← Prev
-                </button>
-                <span style={s.progress}>{flashcardIndex + 1} / 26</span>
-                <button
-                  style={s.navBtn}
-                  onClick={(e) => { e.stopPropagation(); setFlashcardIndex((i) => Math.min(25, i + 1)); setFlipped(false); }}
-                  disabled={atEnd}
-                >
-                  Next →
-                </button>
-              </div>
-              {atEnd && (
-                <button style={{ ...s.againBtn, marginTop: 20 }} onClick={() => startFlashcards()}>
-                  Restart (shuffle again)
-                </button>
-              )}
-            </>
-          ) : (
-            <p>Loading…</p>
-          )}
-        </main>
-      </div>
-    );
-  }
-
-  // Test mode
-  if (testDone) {
-    const total = testOrder.length;
-    const pct = total ? Math.round((testCorrect / total) * 100) : 0;
-    return (
-      <div style={s.root}>
-        <header style={s.header}>
-          <button style={s.backBtn} onClick={handleBack}>← Back</button>
-          <span style={s.headerTitle}>Test</span>
-          <div style={{ width: 70 }} />
-        </header>
-        <main style={s.main}>
-          <div style={s.resultBox}>
-            <div style={s.resultScore}>{testCorrect} / {total}</div>
-            <div style={s.resultText}>{pct}% correct</div>
-            <div style={{ ...s.resultText, marginBottom: 8 }}>Time: {formatTime(testElapsed)}</div>
-            <button style={s.againBtn} onClick={() => startTest()}>
-              Try again
-            </button>
-            <button style={{ ...s.backBtn, marginTop: 12 }} onClick={handleBack}>
-              Back to Practice
-            </button>
-          </div>
-        </main>
-      </div>
-    );
-  }
-
-  if (!testQuestion) {
-    return (
-      <div style={s.root}>
-        <header style={s.header}>
-          <button style={s.backBtn} onClick={handleBack}>← Back</button>
-          <span style={s.headerTitle}>Test</span>
-        </header>
-        <main style={s.main}><p>Loading…</p></main>
-      </div>
-    );
-  }
-
+function CircleTimer({ value, max, urgent }) {
+  const pct = value / max;
   return (
-    <div style={s.root}>
-      <header style={s.header}>
-        <button style={s.backBtn} onClick={handleBack}>← Back</button>
-        <span style={s.headerTitle}>Test</span>
-        <span style={{ fontSize: 14, color: C.textDim, fontFamily: "'IBM Plex Mono', monospace" }}>
-          {testIndex + 1} / {TEST_QUESTION_COUNT} · {formatTime(testElapsed)}
-        </span>
-      </header>
-      <main style={s.main}>
-        <div style={s.questionBox}>
-          <div style={{ ...s.circleTimerWrap, position: "relative" }}>
-            <svg style={s.circleTimerSvg} viewBox={`0 0 ${CIRCLE_TIMER_SIZE} ${CIRCLE_TIMER_SIZE}`}>
-              <circle
-                cx={CIRCLE_TIMER_SIZE / 2}
-                cy={CIRCLE_TIMER_SIZE / 2}
-                r={CIRCLE_R}
-                style={s.circleTimerBg}
-              />
-              <circle
-                cx={CIRCLE_TIMER_SIZE / 2}
-                cy={CIRCLE_TIMER_SIZE / 2}
-                r={CIRCLE_R}
-                style={{
-                  ...s.circleTimerFill,
-                  strokeDasharray: CIRCLE_CIRCUMFERENCE,
-                  strokeDashoffset: CIRCLE_CIRCUMFERENCE * (1 - countdown / QUESTION_TIME_SECONDS),
-                }}
-              />
-            </svg>
-            <span style={s.circleTimerText}>{countdown}</span>
-          </div>
-          <div style={s.questionImageWrap}>
-            <LetterImage letter={testQuestion} style={s.signImageLarge} />
-          </div>
-          <div style={s.questionText}>Which letter is this sign for?</div>
-          <div style={s.optionsGrid}>
-            {testOptions.map((letter) => {
-              let btnStyle = s.optionBtn;
-              if (testAnswered) {
-                if (letter === testQuestion) btnStyle = { ...s.optionBtn, ...s.optionCorrect };
-                else if (letter === testPicked && letter !== testQuestion) btnStyle = { ...s.optionBtn, ...s.optionWrong };
-              }
-              return (
-                <button
-                  key={letter}
-                  style={btnStyle}
-                  onClick={() => handleTestAnswer(letter)}
-                  disabled={testAnswered}
-                >
-                  {letter}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-        {testAnswered && (
-          <button style={{ ...s.againBtn, marginTop: 24 }} onClick={handleTestNext}>
-            {testIndex + 1 >= testOrder.length ? "See results" : "Next →"}
-          </button>
-        )}
-      </main>
+    <div style={{ position: "relative", display: "inline-flex" }}>
+      <svg style={{ transform: "rotate(-90deg)" }} width={CIRCLE_SIZE} height={CIRCLE_SIZE}
+        viewBox={`0 0 ${CIRCLE_SIZE} ${CIRCLE_SIZE}`}>
+        <circle cx={CIRCLE_SIZE/2} cy={CIRCLE_SIZE/2} r={CIRCLE_R}
+          fill="none" stroke={C.border} strokeWidth={CIRCLE_STROKE} />
+        <circle cx={CIRCLE_SIZE/2} cy={CIRCLE_SIZE/2} r={CIRCLE_R}
+          fill="none" stroke={urgent ? "#b91c1c" : C.text} strokeWidth={CIRCLE_STROKE}
+          strokeLinecap="round"
+          strokeDasharray={CIRCLE_C}
+          strokeDashoffset={CIRCLE_C * (1 - pct)}
+          style={{ transition: "stroke-dashoffset 0.3s, stroke 0.3s" }} />
+      </svg>
+      <span style={{
+        position: "absolute", left: "50%", top: "50%", transform: "translate(-50%,-50%)",
+        fontSize: 28, fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace", color: C.text,
+      }}>{value}</span>
     </div>
   );
 }
+
+// ── Sign-It WS ────────────────────────────────────────────────────────────────
+function useSignItWS() {
+  const wsRef = useRef(null);
+  const onMsgRef = useRef(null);
+  const [connected, setConnected] = useState(false);
+  const connect = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    const ws = new WebSocket(WS_SIGN_IT);
+    ws.onopen    = () => setConnected(true);
+    ws.onclose   = () => { setConnected(false); wsRef.current = null; };
+    ws.onerror   = () => ws.close();
+    ws.onmessage = (e) => { try { onMsgRef.current?.(JSON.parse(e.data)); } catch {} };
+    wsRef.current = ws;
+  }, []);
+  const disconnect = useCallback(() => { wsRef.current?.close(); wsRef.current = null; }, []);
+  useEffect(() => () => wsRef.current?.close(), []);
+  return { connected, connect, disconnect, onMsgRef };
+}
+
+// ── Shell ─────────────────────────────────────────────────────────────────────
+function Shell({ title, right, onBack, children }) {
+  return (
+    <div style={s.root}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: ${C.bg}; }
+        button { font-family: 'IBM Plex Sans', sans-serif; cursor: pointer; }
+        button:disabled { opacity: 0.35; cursor: default; }
+        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+      `}</style>
+      <header style={s.header}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={s.logoMark}>N</div>
+          <span style={s.logoText}>NeuroSign</span>
+          {title && <><span style={s.sep}>·</span><span style={s.pageTitle}>{title}</span></>}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          {right}
+          {onBack && <button style={s.backBtn} onClick={onBack}>← Back</button>}
+        </div>
+      </header>
+      {children}
+    </div>
+  );
+}
+
+// ── Main component ────────────────────────────────────────────────────────────
+export default function Practice({ onNavigate }) {
+  const [mode, setMode] = useState(null);
+
+  // flashcard
+  const [fcOrder, setFcOrder] = useState(() => shuffle([...LETTERS]));
+  const [fcIdx, setFcIdx]     = useState(0);
+  const [flipped, setFlipped] = useState(false);
+
+  // test
+  const [tOrder, setTOrder]     = useState([]);
+  const [tIdx, setTIdx]         = useState(0);
+  const [tCorrect, setTCorrect] = useState(0);
+  const [tInput, setTInput]     = useState("");
+  const [tAnswered, setTAnswered] = useState(false);
+  const [tIsRight, setTIsRight] = useState(false);
+  const [tDone, setTDone]       = useState(false);
+  const [tElapsed, setTElapsed] = useState(0);
+  const [tCountdown, setTCountdown] = useState(QUESTION_TIME_SECONDS);
+  const tStartRef = useRef(null);
+  const tNextRef  = useRef(null);
+  const inputRef  = useRef(null);
+
+  // signit
+  const [siOrder, setSiOrder]     = useState([]);
+  const [siIdx, setSiIdx]         = useState(0);
+  const [siCorrect, setSiCorrect] = useState(0);
+  const [siAnswered, setSiAnswered] = useState(false);
+  const [siDone, setSiDone]       = useState(false);
+  const [siElapsed, setSiElapsed] = useState(0);
+  const [siCountdown, setSiCountdown] = useState(QUESTION_TIME_SECONDS);
+  const [camFrame, setCamFrame]   = useState(null);
+  const [camPred, setCamPred]     = useState("");
+  const [camConf, setCamConf]     = useState(0);
+  const [camHands, setCamHands]   = useState(0);
+  const [camOn, setCamOn]         = useState(false);
+  const siStartRef = useRef(null);
+  const siNextRef  = useRef(null);
+
+  const { connected: wsConn, connect: wsConnect, disconnect: wsDisc, onMsgRef } = useSignItWS();
+  onMsgRef.current = (msg) => {
+    if (msg.frame)      setCamFrame(msg.frame);
+    if (msg.prediction) setCamPred(msg.prediction);
+    if (msg.confidence !== undefined) setCamConf(msg.confidence);
+    if (msg.num_hands  !== undefined) setCamHands(msg.num_hands);
+  };
+
+  // ── Test helpers ────────────────────────────────────────────────────────────
+  const startTest = () => {
+    setTOrder(shuffle([...LETTERS]).slice(0, TEST_QUESTION_COUNT));
+    setTIdx(0); setTCorrect(0); setTInput(""); setTAnswered(false);
+    setTIsRight(false); setTDone(false); setTElapsed(0); setTCountdown(QUESTION_TIME_SECONDS);
+    tStartRef.current = Date.now();
+  };
+  useEffect(() => {
+    if (mode !== "test" || tDone || !tOrder.length) return;
+    const id = setInterval(() => setTElapsed(Math.floor((Date.now() - tStartRef.current) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [mode, tDone, tOrder.length]);
+  useEffect(() => {
+    if (mode !== "test" || tDone || !tOrder.length || tAnswered) return;
+    const id = setInterval(() => setTCountdown(c => {
+      if (c <= 1) { setTAnswered(true); setTIsRight(false); setTimeout(() => tNextRef.current?.(), 1500); return 0; }
+      return c - 1;
+    }), 1000);
+    return () => clearInterval(id);
+  }, [mode, tDone, tOrder.length, tAnswered, tIdx]);
+  useEffect(() => {
+    if (mode === "test" && !tAnswered) setTimeout(() => inputRef.current?.focus(), 50);
+  }, [mode, tIdx, tAnswered]);
+  const tNext = () => {
+    if (tIdx + 1 >= tOrder.length) { setTElapsed(Math.floor((Date.now() - tStartRef.current) / 1000)); setTDone(true); }
+    else { setTIdx(i => i + 1); setTAnswered(false); setTIsRight(false); setTInput(""); setTCountdown(QUESTION_TIME_SECONDS); }
+  };
+  tNextRef.current = tNext;
+  const tQuestion = tOrder[tIdx];
+
+  // ── Sign-It helpers ──────────────────────────────────────────────────────────
+  const startSignIt = () => {
+    setSiOrder(shuffle([...LETTERS]).slice(0, TEST_QUESTION_COUNT));
+    setSiIdx(0); setSiCorrect(0); setSiAnswered(false); setSiDone(false);
+    setSiElapsed(0); setSiCountdown(QUESTION_TIME_SECONDS);
+    setCamPred(""); setCamFrame(null); siStartRef.current = Date.now();
+  };
+  useEffect(() => {
+    if (mode !== "signit" || siDone || !siOrder.length || !camOn) return;
+    const id = setInterval(() => setSiElapsed(Math.floor((Date.now() - siStartRef.current) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [mode, siDone, siOrder.length, camOn]);
+  useEffect(() => {
+    if (mode !== "signit" || siDone || !siOrder.length || siAnswered || !camOn) return;
+    const id = setInterval(() => setSiCountdown(c => {
+      if (c <= 1) { setSiAnswered(true); setTimeout(() => siNextRef.current?.(), 1500); return 0; }
+      return c - 1;
+    }), 1000);
+    return () => clearInterval(id);
+  }, [mode, siDone, siOrder.length, siAnswered, siIdx, camOn]);
+  // auto-detect
+  useEffect(() => {
+    if (mode !== "signit" || siAnswered || !siOrder[siIdx] || !camOn) return;
+    if (camPred === siOrder[siIdx] && camConf >= 0.75) {
+      setSiAnswered(true); setSiCorrect(c => c + 1);
+      setTimeout(() => siNextRef.current?.(), 1400);
+    }
+  }, [camPred, camConf, siAnswered, mode, camOn, siIdx, siOrder]);
+  const siNext = () => {
+    if (siIdx + 1 >= siOrder.length) { setSiElapsed(Math.floor((Date.now() - siStartRef.current) / 1000)); setSiDone(true); }
+    else { setSiIdx(i => i + 1); setSiAnswered(false); setSiCountdown(QUESTION_TIME_SECONDS); setCamPred(""); }
+  };
+  siNextRef.current = siNext;
+  useEffect(() => {
+    if (mode !== "signit" && camOn) { wsDisc(); setCamOn(false); setCamFrame(null); }
+  }, [mode]);
+  const toggleCam = () => {
+    if (camOn) { wsDisc(); setCamOn(false); setCamFrame(null); }
+    else { wsConnect(); setCamOn(true); if (!siStartRef.current) siStartRef.current = Date.now(); }
+  };
+  const siQuestion = siOrder[siIdx];
+  const siIsRight = camPred === siQuestion && camConf >= 0.75;
+
+  const goBack = () => {
+    if (mode === null) { onNavigate?.("home"); return; }
+    if (camOn) { wsDisc(); setCamOn(false); setCamFrame(null); }
+    setMode(null); setFlipped(false); setFcIdx(0);
+  };
+
+  // ── Menu ────────────────────────────────────────────────────────────────────
+  if (mode === null) return (
+    <Shell onBack={goBack}>
+      <main style={s.menuMain}>
+        <div style={s.menuHero}>
+          <h1 style={s.menuTitle}>Practice</h1>
+          <p style={s.menuSub}>Learn and drill the ASL alphabet three ways</p>
+        </div>
+        <div style={s.menuCards}>
+          <ModeCard icon="🃏" label="Flashcards" num="01"
+            desc="Flip through all 26 letters in random order. See the sign image, guess the letter, then flip to reveal."
+            cta="Start flashcards →"
+            onClick={() => { setFcOrder(shuffle([...LETTERS])); setFcIdx(0); setFlipped(false); setMode("flashcards"); }} />
+          <ModeCard icon="✏️" label="Type It" num="02"
+            desc="See the sign image with a countdown timer. Type the letter — one keystroke submits automatically."
+            cta="Start quiz →"
+            onClick={() => { startTest(); setMode("test"); }} />
+          <ModeCard icon="🤚" label="Sign It" num="03"
+            desc="A letter is shown — sign it with your camera. The model detects your hand and moves on automatically."
+            cta="Start signing →"
+            onClick={() => { startSignIt(); setMode("signit"); }} />
+        </div>
+      </main>
+    </Shell>
+  );
+
+  // ── Flashcards ──────────────────────────────────────────────────────────────
+  if (mode === "flashcards") {
+    const letter = fcOrder[fcIdx];
+    return (
+      <Shell title="Flashcards" onBack={goBack}
+        right={<span style={s.counter}>{fcIdx + 1} / 26</span>}>
+        <main style={s.center}>
+          <div style={s.fcCard} onClick={() => setFlipped(f => !f)} tabIndex={0}
+            onKeyDown={e => e.key === "Enter" && setFlipped(f => !f)}
+            role="button" aria-label="Flip card">
+            <div style={{ ...s.fcInner, transform: flipped ? "rotateY(180deg)" : "none" }}>
+              <div style={s.fcFront}>
+                <LetterImage letter={letter} />
+                <p style={s.fcPrompt}>What letter? · tap to flip</p>
+              </div>
+              <div style={{ ...s.fcFront, ...s.fcBack }}>
+                <span style={s.fcLetter}>{letter}</span>
+                <span style={s.fcHint}>{HINTS[letter]}</span>
+              </div>
+            </div>
+          </div>
+          <div style={s.navRow}>
+            <button style={s.navBtn} disabled={fcIdx === 0}
+              onClick={e => { e.stopPropagation(); setFcIdx(i => Math.max(0,i-1)); setFlipped(false); }}>← Prev</button>
+            <span style={s.counter}>{fcIdx + 1} / 26</span>
+            <button style={s.navBtn} disabled={fcIdx >= 25}
+              onClick={e => { e.stopPropagation(); setFcIdx(i => Math.min(25,i+1)); setFlipped(false); }}>Next →</button>
+          </div>
+          {fcIdx >= 25 && (
+            <button style={{ ...s.pill, marginTop: 16 }}
+              onClick={() => { setFcOrder(shuffle([...LETTERS])); setFcIdx(0); setFlipped(false); }}>
+              Restart (shuffle)
+            </button>
+          )}
+        </main>
+      </Shell>
+    );
+  }
+
+  // ── Test results ─────────────────────────────────────────────────────────────
+  if (mode === "test" && tDone) {
+    const pct = Math.round((tCorrect / tOrder.length) * 100);
+    return (
+      <Shell title="Type It" onBack={goBack}>
+        <main style={s.center}>
+          <div style={s.resultBox}>
+            <div style={s.resultScore}>{tCorrect} / {tOrder.length}</div>
+            <div style={s.resultPct}>{pct}% correct · {fmt(tElapsed)}</div>
+            <button style={s.pill} onClick={() => { startTest(); }}>Try again</button>
+            <button style={s.outlineBtn} onClick={goBack}>Back to Practice</button>
+          </div>
+        </main>
+      </Shell>
+    );
+  }
+
+  // ── Test question ────────────────────────────────────────────────────────────
+  if (mode === "test" && tQuestion) return (
+    <Shell title="Type It" onBack={goBack}
+      right={<span style={s.counter}>{tIdx+1} / {TEST_QUESTION_COUNT} · {fmt(tElapsed)}</span>}>
+      <main style={s.center}>
+        <div style={s.qBox}>
+          <div style={{ marginBottom: 16 }}>
+            <CircleTimer value={tCountdown} max={QUESTION_TIME_SECONDS} urgent={tCountdown <= 3} />
+          </div>
+          <LetterImage letter={tQuestion} style={{ maxWidth: 200, height: 160 }} />
+          <p style={s.qText}>Which letter is this sign?</p>
+          <input ref={inputRef}
+            style={{
+              ...s.letterInput,
+              border: tAnswered
+                ? `2px solid ${tIsRight ? "#2e7d32" : "#b91c1c"}`
+                : `2px solid ${C.border}`,
+              background: tAnswered ? (tIsRight ? "#f0fdf4" : "#fef2f2") : C.surface,
+              color: tAnswered ? (tIsRight ? "#166534" : "#b91c1c") : C.text,
+            }}
+            type="text" maxLength={1} value={tInput} autoComplete="off"
+            disabled={tAnswered}
+            placeholder="A–Z"
+            onChange={e => {
+              const v = e.target.value.toUpperCase().replace(/[^A-Z]/,"");
+              setTInput(v);
+              if (v.length === 1 && !tAnswered) {
+                const right = v === tQuestion;
+                setTAnswered(true); setTIsRight(right);
+                if (right) setTCorrect(c => c + 1);
+                setTimeout(() => tNextRef.current?.(), 1400);
+              }
+            }}
+          />
+          {tAnswered && (
+            <p style={{ ...s.feedback, color: tIsRight ? "#166534" : "#b91c1c" }}>
+              {tIsRight ? "✓ Correct!" : `✗ It was ${tQuestion}`}
+            </p>
+          )}
+        </div>
+      </main>
+    </Shell>
+  );
+
+  // ── Sign-It results ──────────────────────────────────────────────────────────
+  if (mode === "signit" && siDone) {
+    const pct = Math.round((siCorrect / siOrder.length) * 100);
+    return (
+      <Shell title="Sign It" onBack={goBack}>
+        <main style={s.center}>
+          <div style={s.resultBox}>
+            <div style={s.resultScore}>{siCorrect} / {siOrder.length}</div>
+            <div style={s.resultPct}>{pct}% correct · {fmt(siElapsed)}</div>
+            <button style={s.pill} onClick={() => { startSignIt(); }}>Try again</button>
+            <button style={s.outlineBtn} onClick={goBack}>Back to Practice</button>
+          </div>
+        </main>
+      </Shell>
+    );
+  }
+
+  // ── Sign-It question ─────────────────────────────────────────────────────────
+  if (mode === "signit" && siQuestion) return (
+    <Shell title="Sign It" onBack={goBack}
+      right={<span style={s.counter}>{siIdx+1} / {TEST_QUESTION_COUNT} · {fmt(siElapsed)}</span>}>
+      <main style={{ ...s.center, paddingTop: 32 }}>
+        <div style={s.siLayout}>
+          {/* Left: letter prompt */}
+          <div style={s.siLeft}>
+            <p style={s.sectionLabel}>Sign this letter</p>
+            <div style={s.siBigLetter}>{siQuestion}</div>
+            <p style={s.siHint}>{HINTS[siQuestion]}</p>
+            {camOn && (
+              <div style={{ marginTop: 20 }}>
+                <CircleTimer value={siCountdown} max={QUESTION_TIME_SECONDS} urgent={siCountdown <= 3} />
+              </div>
+            )}
+            {siAnswered && (
+              <div style={{
+                marginTop: 16, padding: "10px 18px",
+                background: siIsRight ? "#f0fdf4" : "#fef2f2",
+                border: `1px solid ${siIsRight ? "#a5d6a7" : "#fca5a5"}`,
+                fontSize: 15, fontWeight: 600,
+                color: siIsRight ? "#166534" : "#b91c1c",
+              }}>
+                {siIsRight ? "✓ Correct!" : `Time's up — it was ${siQuestion}`}
+              </div>
+            )}
+          </div>
+
+          {/* Right: camera */}
+          <div style={s.siRight}>
+            <p style={s.sectionLabel}>Your camera</p>
+            <div style={s.camWrap}>
+              {camFrame
+                ? <img src={`data:image/jpeg;base64,${camFrame}`} alt="cam" style={s.camImg} />
+                : <div style={s.camBlank}>
+                    <span style={s.camBlankIcon}>◻</span>
+                    <span style={s.camBlankText}>{camOn ? "Connecting…" : "Camera off"}</span>
+                  </div>
+              }
+              {camOn && (
+                <div style={{
+                  ...s.handTag,
+                  background: camHands > 0 ? "#e8f5e9" : "#fff8e1",
+                  color: camHands > 0 ? "#2e7d32" : "#f57f17",
+                  border: `1px solid ${camHands > 0 ? "#a5d6a7" : "#ffe082"}`,
+                }}>
+                  {camHands > 0 ? `${camHands} hand${camHands > 1 ? "s" : ""}` : "No hands"}
+                </div>
+              )}
+              {camOn && camPred && (
+                <div style={{
+                  ...s.camPred,
+                  background: siIsRight ? "rgba(21,128,61,0.85)" : "rgba(0,0,0,0.72)",
+                }}>
+                  {camPred} · {Math.round(camConf * 100)}%
+                </div>
+              )}
+            </div>
+            <button style={{ ...s.navBtn, marginTop: 8, width: "100%", padding: "9px 0" }} onClick={toggleCam}>
+              {camOn ? "Stop Camera" : "Start Camera"}
+            </button>
+            {!camOn && <p style={s.camNote}>Start camera to begin signing</p>}
+          </div>
+        </div>
+      </main>
+    </Shell>
+  );
+
+  return null;
+}
+
+// ── Sub-components ─────────────────────────────────────────────────────────────
+function ModeCard({ icon, label, num, desc, cta, onClick }) {
+  const [h, setH] = useState(false);
+  return (
+    <button onClick={onClick} onMouseEnter={() => setH(true)} onMouseLeave={() => setH(false)}
+      style={{ ...s.modeCard, background: h ? "#fafaf8" : C.surface }}>
+      <div style={s.modeNum}>{num}</div>
+      <div style={s.modeIcon}>{icon}</div>
+      <div style={s.modeLabel}>{label}</div>
+      <div style={s.modeDesc}>{desc}</div>
+      <div style={s.modeCta}>{cta}</div>
+    </button>
+  );
+}
+
+const s = {
+  root: { minHeight: "100vh", background: C.bg, fontFamily: "'IBM Plex Sans', system-ui, sans-serif", color: C.text, display: "flex", flexDirection: "column" },
+  header: { background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "0 28px", height: 52, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 },
+  logoMark: { width: 24, height: 24, background: C.text, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, flexShrink: 0 },
+  logoText: { fontSize: 15, fontWeight: 700, letterSpacing: "-0.02em", color: C.text },
+  sep: { fontSize: 16, color: C.textDim, margin: "0 6px" },
+  pageTitle: { fontSize: 14, fontWeight: 500, color: C.textMid },
+  backBtn: { padding: "6px 14px", background: "none", border: `1px solid ${C.border}`, fontSize: 13, fontWeight: 500, color: C.textMid },
+  counter: { fontSize: 13, color: C.textDim, fontFamily: "'IBM Plex Mono', monospace" },
+  sectionLabel: { fontSize: 11, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", color: C.textDim, marginBottom: 8 },
+
+  // menu
+  menuMain: { flex: 1, maxWidth: 960, width: "100%", margin: "0 auto", padding: "56px 32px 64px" },
+  menuHero: { textAlign: "center", marginBottom: 52 },
+  menuTitle: { fontSize: "clamp(28px, 5vw, 42px)", fontWeight: 700, letterSpacing: "-0.03em", color: C.text, marginBottom: 12 },
+  menuSub: { fontSize: 16, color: C.textMid },
+  menuCards: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 1, border: `1px solid ${C.border}`, background: C.border },
+  modeCard: { padding: "32px 28px", border: "none", textAlign: "left", cursor: "pointer", display: "flex", flexDirection: "column", gap: 8, transition: "background 0.1s" },
+  modeNum: { fontSize: 11, fontWeight: 600, letterSpacing: "0.1em", color: C.textDim, fontFamily: "'IBM Plex Mono', monospace" },
+  modeIcon: { fontSize: 32, marginTop: 4, marginBottom: 4 },
+  modeLabel: { fontSize: 18, fontWeight: 700, letterSpacing: "-0.01em", color: C.text },
+  modeDesc: { fontSize: 13, color: C.textMid, lineHeight: 1.55, flex: 1 },
+  modeCta: { fontSize: 12, fontWeight: 600, color: C.text, marginTop: 8 },
+
+  // shared
+  center: { flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "32px 24px" },
+  pill: { padding: "11px 28px", background: C.text, color: "#fff", border: "none", fontSize: 14, fontWeight: 600, cursor: "pointer" },
+  outlineBtn: { padding: "9px 20px", background: "none", border: `1px solid ${C.border}`, fontSize: 13, fontWeight: 500, color: C.text, cursor: "pointer" },
+  navBtn: { padding: "8px 18px", background: C.surface, border: `1px solid ${C.border}`, fontSize: 13, fontWeight: 500, color: C.text, cursor: "pointer" },
+  navRow: { display: "flex", alignItems: "center", gap: 16, marginTop: 24 },
+
+  // flashcard
+  fcCard: { width: "100%", maxWidth: 340, perspective: 1000, cursor: "pointer" },
+  fcInner: { position: "relative", width: "100%", minHeight: 230, transformStyle: "preserve-3d", transition: "transform 0.4s ease" },
+  fcFront: { position: "absolute", inset: 0, background: C.surface, border: `1px solid ${C.border}`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 28, backfaceVisibility: "hidden", boxShadow: "0 2px 12px rgba(0,0,0,0.06)" },
+  fcBack: { transform: "rotateY(180deg)" },
+  fcLetter: { fontSize: 80, fontWeight: 700, color: C.text, lineHeight: 1 },
+  fcHint: { fontSize: 14, color: C.textDim, marginTop: 12, textAlign: "center" },
+  fcPrompt: { fontSize: 13, color: C.textMid, marginTop: 12 },
+
+  // test
+  qBox: { background: C.surface, border: `1px solid ${C.border}`, padding: "36px 40px", maxWidth: 440, width: "100%", display: "flex", flexDirection: "column", alignItems: "center", gap: 16 },
+  qText: { fontSize: 16, fontWeight: 600, color: C.text },
+  letterInput: { width: 76, height: 76, textAlign: "center", fontSize: 40, fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace", outline: "none", transition: "border-color 0.2s, background 0.2s, color 0.2s" },
+  feedback: { fontSize: 14, fontWeight: 600 },
+
+  // result
+  resultBox: { textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", gap: 12 },
+  resultScore: { fontSize: 60, fontWeight: 700, letterSpacing: "-0.03em", color: C.text },
+  resultPct: { fontSize: 16, color: C.textMid, marginBottom: 8 },
+
+  // sign-it
+  siLayout: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 36, maxWidth: 760, width: "100%", alignItems: "start" },
+  siLeft: { background: C.surface, border: `1px solid ${C.border}`, padding: "28px 24px", display: "flex", flexDirection: "column", alignItems: "center" },
+  siBigLetter: { fontSize: 110, fontWeight: 700, lineHeight: 1, letterSpacing: "-0.03em", color: C.text },
+  siHint: { fontSize: 13, color: C.textDim, marginTop: 8, textAlign: "center" },
+  siRight: { display: "flex", flexDirection: "column" },
+  camWrap: { position: "relative", background: "#111", border: `1px solid ${C.border}`, aspectRatio: "4/3", overflow: "hidden" },
+  camImg: { width: "100%", height: "100%", objectFit: "cover", display: "block" },
+  camBlank: { height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8 },
+  camBlankIcon: { fontSize: 28, color: "#555" },
+  camBlankText: { fontSize: 13, color: "#888" },
+  handTag: { position: "absolute", top: 8, right: 8, padding: "3px 8px", fontSize: 11, fontWeight: 500 },
+  camPred: { position: "absolute", bottom: 10, left: "50%", transform: "translateX(-50%)", color: "#fff", fontSize: 15, fontWeight: 700, padding: "5px 14px", fontFamily: "'IBM Plex Mono', monospace", whiteSpace: "nowrap" },
+  camNote: { fontSize: 12, color: C.textDim, textAlign: "center", marginTop: 8 },
+};

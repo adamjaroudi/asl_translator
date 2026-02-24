@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 
-const WS_URL     = "ws://localhost:8765";
+const WS_STATIC   = "ws://localhost:8765";
+const WS_MOTION   = "ws://localhost:8768";
 const RESTART_URL = "ws://localhost:8767";
 const CONFIDENCE_THRESHOLD = 0.6;
 
@@ -8,6 +9,8 @@ const SIGN_EMOJI = {
   "I Love You": "🤟", "Good": "👍", "Yes": "✌️", "No": "🤚",
   "More": "🤌", "Help": "🙏", "Book": "📖", "Stop": "✋",
   "Play": "🤙", "Want": "🫳", "With": "🤜", "Same": "☝️",
+  "Please": "🙏", "Thank You": "🙌", "Where": "🤷",
+  "How": "🤲", "Come": "👋", "Go Away": "👋", "Name": "👆",
 };
 
 const SUGGESTIONS = ["LOVE", "HELLO", "MORE", "HELP", "GOOD", "STOP", "YES", "NO", "WANT", "PLAY"];
@@ -20,8 +23,17 @@ const QUICK_TIPS = [
   "Face the camera directly",
 ];
 
-function useWebSocket(url, onMessage) {
+const MOTION_TIPS = [
+  "Make full, deliberate motions",
+  "Start and end each sign cleanly",
+  "Keep hand in frame throughout",
+  "Wait for the buffer bar to fill",
+  "Motion gate triggers on movement",
+];
+
+function useWebSocket(url) {
   const wsRef = useRef(null);
+  const onMessageRef = useRef(null);
   const [connected, setConnected] = useState(false);
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
@@ -29,47 +41,58 @@ function useWebSocket(url, onMessage) {
     ws.onopen    = () => setConnected(true);
     ws.onclose   = () => { setConnected(false); wsRef.current = null; };
     ws.onerror   = () => ws.close();
-    ws.onmessage = (e) => onMessage(JSON.parse(e.data));
+    ws.onmessage = (e) => { try { onMessageRef.current?.(JSON.parse(e.data)); } catch {} };
     wsRef.current = ws;
-  }, [url, onMessage]);
-  const disconnect = useCallback(() => wsRef.current?.close(), []);
+  }, [url]);
+  const disconnect = useCallback(() => { wsRef.current?.close(); wsRef.current = null; }, []);
   const send = useCallback((data) => {
     if (wsRef.current?.readyState === WebSocket.OPEN)
       wsRef.current.send(JSON.stringify(data));
   }, []);
   useEffect(() => () => wsRef.current?.close(), []);
-  return { connected, connect, disconnect, send };
+  return { connected, connect, disconnect, send, onMessageRef };
 }
 
 export default function ASLTranslator({ onNavigate }) {
-  const [data, setData] = useState({
+  const [mode, setMode] = useState("static"); // "static" | "motion"
+
+  const [staticData, setStaticData] = useState({
     frame: null, prediction: "", confidence: 0,
-    isWord: false, sentence: "", numHands: 0, stablePct: 0, fps: 0,
-    topAlts: [],
+    isWord: false, sentence: "", numHands: 0, stablePct: 0, fps: 0, topAlts: [],
   });
-  const [active, setActive] = useState(false);
-  const [history, setHistory] = useState([]);
-  const [speaking, setSpeaking] = useState(false);
+
+  const [motionData, setMotionData] = useState({
+    frame: null, motionSign: "", motionConf: 0, motionAlts: [],
+    staticSign: "", staticConf: 0, sentence: "", numHands: 0,
+    bufferPct: 0, motionVal: 0, motionActive: false, stablePct: 0,
+    fps: 0, modelClasses: [],
+  });
+
+  const [active, setActive]           = useState(false);
+  const [history, setHistory]         = useState([]);
+  const [speaking, setSpeaking]       = useState(false);
   const [showHistory, setShowHistory] = useState(false);
-  const [showDict, setShowDict] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [restarting, setRestarting]     = useState(false);
+  const [restarting, setRestarting]   = useState(false);
+  const [staticError, setStaticError]  = useState("");
+  const [motionError, setMotionError]  = useState("");
 
   const handleRestart = useCallback(() => {
     setRestarting(true);
     const ws = new WebSocket(RESTART_URL);
-    ws.onopen = () => ws.send(JSON.stringify({ action: "restart" }));
-    ws.onmessage = () => {
-      ws.close();
-      // Reconnect after 2.5s to give server time to restart
-      setTimeout(() => setRestarting(false), 2500);
-    };
-    ws.onerror = () => setRestarting(false);
+    ws.onopen    = () => ws.send(JSON.stringify({ action: "restart" }));
+    ws.onmessage = () => { ws.close(); setTimeout(() => setRestarting(false), 2500); };
+    ws.onerror   = () => setRestarting(false);
   }, []);
 
-  const onMessage = useCallback((msg) => {
-    if (msg.error) return;
-    setData(prev => {
+  const { connected: staticConnected, connect: staticConnect, disconnect: staticDisconnect,
+          send: staticSend, onMessageRef: staticMsgRef } = useWebSocket(WS_STATIC);
+  const { connected: motionConnected, connect: motionConnect, disconnect: motionDisconnect,
+          send: motionSend, onMessageRef: motionMsgRef } = useWebSocket(WS_MOTION);
+
+  staticMsgRef.current = (msg) => {
+    if (msg.error) { setStaticError(msg.error); setActive(false); staticDisconnect(); return; }
+    setStaticData(prev => {
       if (msg.sentence && msg.sentence !== prev.sentence && msg.sentence.trim()) {
         setHistory(h => {
           if (h[h.length - 1] === msg.sentence.trim()) return h;
@@ -88,36 +111,116 @@ export default function ASLTranslator({ onNavigate }) {
         topAlts:    msg.top_alts   ?? prev.topAlts,
       };
     });
-  }, []);
-
-  const { connected, connect, disconnect, send } = useWebSocket(WS_URL, onMessage);
-
-  const handleToggle = () => {
-    if (active) { disconnect(); setActive(false); setData(d => ({ ...d, frame: null })); }
-    else { connect(); setActive(true); }
   };
 
+  motionMsgRef.current = (msg) => {
+    if (msg.error) { setMotionError(msg.error); setActive(false); motionDisconnect(); return; }
+    setMotionData(prev => {
+      if (msg.sentence && msg.sentence !== prev.sentence && msg.sentence.trim()) {
+        setHistory(h => {
+          if (h[h.length - 1] === msg.sentence.trim()) return h;
+          return [...h.slice(-49), msg.sentence.trim()];
+        });
+      }
+      return {
+        frame:        msg.frame         ?? prev.frame,
+        motionSign:   msg.motion_sign   ?? "",
+        motionConf:   msg.motion_conf   ?? 0,
+        motionAlts:   msg.motion_alts   ?? prev.motionAlts,
+        staticSign:   msg.static_sign   ?? "",
+        staticConf:   msg.static_conf   ?? 0,
+        sentence:     msg.sentence      ?? prev.sentence,
+        numHands:     msg.num_hands     ?? 0,
+        bufferPct:    msg.buffer_pct    ?? 0,
+        motionVal:    msg.motion_val    ?? 0,
+        motionActive: msg.motion_active ?? false,
+        stablePct:    msg.stable_pct    ?? 0,
+        fps:          msg.fps           ?? prev.fps,
+        modelClasses: msg.model_classes ?? prev.modelClasses,
+      };
+    });
+  };
+
+  // Use a ref for mode so callbacks always read the current value
+  const modeRef = useRef(mode);
+  useEffect(() => { modeRef.current = mode; }, [mode]);
+
+  const isMotion   = mode === "motion";
+  const connected  = isMotion ? motionConnected : staticConnected;
+
+  // Always call the right WS based on current modeRef — never stale
+  const connectCurrent    = useCallback(() => {
+    if (modeRef.current === "motion") motionConnect(); else staticConnect();
+  }, [motionConnect, staticConnect]);
+
+  const disconnectCurrent = useCallback(() => {
+    motionDisconnect();
+    staticDisconnect();
+  }, [motionDisconnect, staticDisconnect]);
+
+  const sendCurrent = useCallback((data) => {
+    if (modeRef.current === "motion") motionSend(data); else staticSend(data);
+  }, [motionSend, staticSend]);
+
+  const handleToggle = () => {
+    if (active) {
+      disconnectCurrent();
+      setActive(false);
+      setStaticData(d => ({ ...d, frame: null }));
+      setMotionData(d => ({ ...d, frame: null }));
+    } else {
+      setStaticError("");
+      setMotionError("");
+      connectCurrent();
+      setActive(true);
+    }
+  };
+
+  const handleModeSwitch = (newMode) => {
+    if (newMode === mode) return;
+    if (active) {
+      disconnectCurrent();
+      setActive(false);
+      setStaticData(d => ({ ...d, frame: null }));
+      setMotionData(d => ({ ...d, frame: null }));
+    }
+    setMode(newMode);
+  };
+
+  const d         = staticData;
+  const m         = motionData;
+  const frame     = isMotion ? m.frame    : d.frame;
+  const numHands  = isMotion ? m.numHands : d.numHands;
+  const fps       = isMotion ? m.fps      : d.fps;
+  const sentence  = isMotion ? m.sentence : d.sentence;
+
+  const confPct   = Math.round(d.confidence * 100);
+  const confGood  = d.confidence >= CONFIDENCE_THRESHOLD;
+  const stablePct = Math.round(d.stablePct * 100);
+  const signEmoji = SIGN_EMOJI[d.prediction] || "";
+
+  const mConfPct   = Math.round(m.motionConf * 100);
+  const mConfGood  = m.motionConf >= 0.65;
+  const mSignEmoji = SIGN_EMOJI[m.motionSign] || "";
+  const bufferPct  = Math.round(m.bufferPct * 100);
+  const motionPct  = Math.min(Math.round((m.motionVal / 0.045) * 100), 100);
+
   const handleSpeak = () => {
-    if (!data.sentence || speaking) return;
-    const utt = new SpeechSynthesisUtterance(data.sentence);
+    if (!sentence || speaking) return;
+    const utt = new SpeechSynthesisUtterance(sentence);
     utt.onstart = () => setSpeaking(true);
     utt.onend   = () => setSpeaking(false);
     speechSynthesis.speak(utt);
   };
 
   const handleDownload = () => {
-    if (!data.sentence) return;
-    const blob = new Blob([data.sentence], { type: "text/plain" });
+    if (!sentence) return;
+    const blob = new Blob([sentence], { type: "text/plain" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = "asl-translation.txt";
     a.click();
   };
-
-  const confPct  = Math.round(data.confidence * 100);
-  const confGood = data.confidence >= CONFIDENCE_THRESHOLD;
-  const stablePct = Math.round(data.stablePct * 100);
-  const signEmoji = SIGN_EMOJI[data.prediction] || "";
 
   return (
     <div style={s.root}>
@@ -130,69 +233,102 @@ export default function ASLTranslator({ onNavigate }) {
         @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
       `}</style>
 
-      {/* ── Header ── */}
+      {/* Header */}
       <header style={s.header}>
         <div style={s.headerLeft}>
           <span style={s.headerLogo}></span>
           <span style={s.headerTitle}>ASL Translator</span>
+          <div style={s.modeToggle}>
+            <button
+              style={{ ...s.modeBtn, ...(mode === "static" ? s.modeBtnActive : {}) }}
+              onClick={() => handleModeSwitch("static")}
+            >
+              Static
+            </button>
+            <button
+              style={{ ...s.modeBtn, ...(mode === "motion" ? s.modeBtnActive : {}) }}
+              onClick={() => handleModeSwitch("motion")}
+            >
+              Motion
+            </button>
+          </div>
         </div>
         <nav style={s.headerNav}>
           {onNavigate && (
             <button style={s.headerNavBtn} onClick={() => onNavigate("home")}>← Home</button>
           )}
-          <button style={s.headerNavBtn} onClick={() => onNavigate ? onNavigate("dictionary") : setShowDict(true)}>Dictionary</button>
+          <button style={s.headerNavBtn} onClick={() => onNavigate ? onNavigate("dictionary") : null}>Dictionary</button>
           <button style={s.headerNavBtn} onClick={() => setShowHistory(true)}>
             History{history.length > 0 ? ` (${history.length})` : ""}
           </button>
-          <button style={s.headerNavBtn}>Settings</button>
           {onNavigate && (
-            <button style={{ ...s.headerNavBtn, borderColor: "#1a1a1a", fontWeight: 600 }}
+            <button style={{ ...s.headerNavBtn, border: "1px solid #1a1a1a", fontWeight: 600 }}
               onClick={() => onNavigate("collect")}>
               Collect Data →
             </button>
           )}
           <button
-            style={{ ...s.headerNavBtn, ...(restarting ? { color: "#b45309", borderColor: "#fcd34d" } : {}) }}
+            style={{ ...s.headerNavBtn, ...(restarting ? { color: "#b45309", border: "1px solid #fcd34d" } : {}) }}
             onClick={handleRestart}
             disabled={restarting}
             title="Restart the Python server to load a newly trained model"
           >
             {restarting ? "↺ Restarting…" : "↺ Restart Server"}
           </button>
-          {active && (
-            <span style={s.fpsTag}>{data.fps > 0 ? `${data.fps} fps` : "—"}</span>
-          )}
+          {active && <span style={s.fpsTag}>{fps > 0 ? `${fps} fps` : "—"}</span>}
         </nav>
       </header>
 
-      {/* ── Main two-column layout ── */}
       <div style={s.body}>
         <div style={s.topRow}>
 
-          {/* Camera column */}
+          {/* Camera */}
           <div style={s.camCol}>
             <div style={s.camWrap}>
-              {data.frame
-                ? <img src={`data:image/jpeg;base64,${data.frame}`} alt="Camera feed" style={s.camImg} />
+              {frame
+                ? <img src={`data:image/jpeg;base64,${frame}`} alt="Camera feed" style={s.camImg} />
                 : <div style={s.camBlank}>
-                    <span style={s.camBlankIcon}>◻</span>
-                    <span style={s.camBlankText}>{active ? "Connecting to camera…" : "Camera inactive"}</span>
+                    <span style={s.camBlankIcon}>{(isMotion ? motionError : staticError) ? "⚠" : "◻"}</span>
+                    <span style={{ ...s.camBlankText, color: (isMotion ? motionError : staticError) ? "#b91c1c" : "#666", maxWidth: 280, textAlign: "center" }}>
+                      {(isMotion ? motionError : staticError) || (active ? "Connecting to camera…" : "Camera inactive")}
+                    </span>
                   </div>
               }
               {active && connected && (
                 <div style={s.recIndicator}>
                   <span style={{ ...s.recDot, animation: "blink 1s step-end infinite" }} />
-                  Recording
+                  {isMotion ? "Motion Mode" : "Recording"}
                 </div>
               )}
               {active && (
                 <div style={{
                   ...s.handTag,
-                  background: data.numHands > 0 ? "#e8f5e9" : "#fff8e1",
-                  color:      data.numHands > 0 ? "#2e7d32" : "#f57f17",
-                  borderColor:data.numHands > 0 ? "#a5d6a7" : "#ffe082",
+                  background:  numHands > 0 ? "#e8f5e9" : "#fff8e1",
+                  color:       numHands > 0 ? "#2e7d32" : "#f57f17",
+                  border: numHands > 0 ? "1px solid #a5d6a7" : "1px solid #ffe082",
                 }}>
-                  {data.numHands > 0 ? `${data.numHands} hand${data.numHands > 1 ? "s" : ""}` : "No hands detected"}
+                  {numHands > 0 ? `${numHands} hand${numHands > 1 ? "s" : ""}` : "No hands detected"}
+                </div>
+              )}
+              {/* Motion bars — bottom overlay on camera */}
+              {isMotion && active && (
+                <div style={s.motionBars}>
+                  <div style={s.motionBarRow}>
+                    <span style={s.motionBarLabel}>Buffer</span>
+                    <div style={s.motionBarTrack}>
+                      <div style={{ ...s.motionBarFill, width: `${bufferPct}%`, background: bufferPct >= 100 ? "#2e7d32" : "#fff" }} />
+                    </div>
+                    <span style={s.motionBarNum}>{bufferPct}%</span>
+                  </div>
+                  <div style={s.motionBarRow}>
+                    <span style={s.motionBarLabel}>Motion</span>
+                    <div style={s.motionBarTrack}>
+                      <div style={{ ...s.motionBarFill, width: `${motionPct}%`, background: m.motionActive ? "#f59e0b" : "#888" }} />
+                    </div>
+                    <span style={{ ...s.motionBarNum, color: m.motionActive ? "#f59e0b" : "#888" }}>
+                      {m.motionActive ? "active" : "still"}
+                    </span>
+                  </div>
                 </div>
               )}
             </div>
@@ -201,96 +337,129 @@ export default function ASLTranslator({ onNavigate }) {
             </button>
           </div>
 
-          {/* Translation column */}
+          {/* Translation panel */}
           <div style={s.translationCol}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-              <div style={s.sectionLabel}>Translation</div>
-              <label style={s.advancedToggle}>
-                <input
-                  type="checkbox"
-                  checked={showAdvanced}
-                  onChange={e => setShowAdvanced(e.target.checked)}
-                  style={{ marginRight: 6, accentColor: "#1a1a1a" }}
-                />
-                Advanced
-              </label>
-            </div>
-            <div style={s.translationBox}>
-              <div style={s.translationText}>
-                {data.prediction
-                  ? `"${data.prediction.toUpperCase()}"`
-                  : <span style={{ color: "#aaa", fontWeight: 400, fontSize: 22 }}>Waiting for sign…</span>
-                }
-              </div>
-              {signEmoji && <div style={s.translationEmoji}>{signEmoji}</div>}
-            </div>
-            {data.prediction && (
-              <div style={s.confRow}>
-                <div style={s.confBarWrap}>
-                  <div style={{
-                    ...s.confBar,
-                    width: `${confPct}%`,
-                    background: confGood ? "#2e7d32" : "#b45309",
-                  }} />
+            {!isMotion ? (
+              <>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <div style={s.sectionLabel}>Translation</div>
+                  <label style={s.advancedToggle}>
+                    <input type="checkbox" checked={showAdvanced}
+                      onChange={e => setShowAdvanced(e.target.checked)}
+                      style={{ marginRight: 6, accentColor: "#1a1a1a" }} />
+                    Advanced
+                  </label>
                 </div>
-                <span style={{ ...s.confNum, color: confGood ? "#2e7d32" : "#b45309" }}>
-                  {confPct}%
-                </span>
-              </div>
-            )}
-
-            {/* Advanced: top alternatives */}
-            {showAdvanced && data.topAlts && data.topAlts.length > 0 && (
-              <div style={s.altsPanel}>
-                <div style={s.altsPanelTitle}>Also detecting</div>
-                {data.topAlts.map(([label, conf], i) => {
-                  const pct = Math.round(conf * 100);
-                  const isTop = i === 0;
-                  return (
-                    <div key={label} style={s.altRow}>
-                      <span style={{ ...s.altLabel, fontWeight: isTop ? 600 : 400, color: isTop ? C.text : C.textMid }}>
-                        {label}
-                      </span>
-                      <div style={s.altBarWrap}>
-                        <div style={{
-                          ...s.altBar,
-                          width: `${pct}%`,
-                          background: isTop ? "#1a1a1a" : "#c8c8c4",
-                        }} />
-                      </div>
-                      <span style={{ ...s.altPct, color: isTop ? C.text : C.textDim }}>{pct}%</span>
+                <div style={s.translationBox}>
+                  <div style={s.translationText}>
+                    {d.prediction
+                      ? `"${d.prediction.toUpperCase()}"`
+                      : <span style={{ color: "#aaa", fontWeight: 400, fontSize: 22 }}>Waiting for sign…</span>}
+                  </div>
+                  {signEmoji && <div style={s.translationEmoji}>{signEmoji}</div>}
+                </div>
+                {d.prediction && (
+                  <div style={s.confRow}>
+                    <div style={s.confBarWrap}>
+                      <div style={{ ...s.confBar, width: `${confPct}%`, background: confGood ? "#2e7d32" : "#b45309" }} />
                     </div>
-                  );
-                })}
-              </div>
+                    <span style={{ ...s.confNum, color: confGood ? "#2e7d32" : "#b45309" }}>{confPct}%</span>
+                  </div>
+                )}
+                {showAdvanced && d.topAlts?.length > 0 && (
+                  <div style={s.altsPanel}>
+                    <div style={s.altsPanelTitle}>Also detecting</div>
+                    {d.topAlts.map(([label, conf], i) => {
+                      const pct = Math.round(conf * 100);
+                      const isTop = i === 0;
+                      return (
+                        <div key={label} style={s.altRow}>
+                          <span style={{ ...s.altLabel, fontWeight: isTop ? 600 : 400, color: isTop ? C.text : C.textMid }}>{label}</span>
+                          <div style={s.altBarWrap}>
+                            <div style={{ ...s.altBar, width: `${pct}%`, background: isTop ? "#1a1a1a" : "#c8c8c4" }} />
+                          </div>
+                          <span style={{ ...s.altPct, color: isTop ? C.text : C.textDim }}>{pct}%</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            ) : (
+              <>
+                <div style={s.sectionLabel}>Motion Sign</div>
+                <div style={s.translationBox}>
+                  <div style={s.translationText}>
+                    {m.motionSign
+                      ? `"${m.motionSign.toUpperCase()}"`
+                      : <span style={{ color: "#aaa", fontWeight: 400, fontSize: 18 }}>
+                          {m.motionActive ? "Classifying…" : "Move your hand to sign"}
+                        </span>
+                    }
+                  </div>
+                  {mSignEmoji && <div style={s.translationEmoji}>{mSignEmoji}</div>}
+                </div>
+                {m.motionSign && (
+                  <div style={s.confRow}>
+                    <div style={s.confBarWrap}>
+                      <div style={{ ...s.confBar, width: `${mConfPct}%`, background: mConfGood ? "#2e7d32" : "#b45309" }} />
+                    </div>
+                    <span style={{ ...s.confNum, color: mConfGood ? "#2e7d32" : "#b45309" }}>{mConfPct}%</span>
+                  </div>
+                )}
+                {m.staticSign && (
+                  <div style={s.altsPanel}>
+                    <div style={s.altsPanelTitle}>Static reference</div>
+                    <div style={s.altRow}>
+                      <span style={{ ...s.altLabel, fontWeight: 600 }}>{m.staticSign}</span>
+                      <div style={s.altBarWrap}>
+                        <div style={{ ...s.altBar, width: `${Math.round(m.staticConf * 100)}%`, background: "#c8c8c4" }} />
+                      </div>
+                      <span style={{ ...s.altPct, color: C.textDim }}>{Math.round(m.staticConf * 100)}%</span>
+                    </div>
+                  </div>
+                )}
+                {m.motionAlts?.length > 0 && (
+                  <div style={s.altsPanel}>
+                    <div style={s.altsPanelTitle}>Alternatives</div>
+                    {m.motionAlts.map(([label, conf]) => (
+                      <div key={label} style={s.altRow}>
+                        <span style={{ ...s.altLabel, color: C.textMid }}>{label}</span>
+                        <div style={s.altBarWrap}>
+                          <div style={{ ...s.altBar, width: `${Math.round(conf * 100)}%`, background: "#c8c8c4" }} />
+                        </div>
+                        <span style={{ ...s.altPct, color: C.textDim }}>{Math.round(conf * 100)}%</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
             )}
-
-            <button
-              style={{ ...s.btn, ...s.btnSecondary, marginTop: "auto" }}
-              onClick={handleSpeak}
-              disabled={!data.sentence}
-            >
+            <button style={{ ...s.btn, ...s.btnSecondary, marginTop: "auto" }}
+              onClick={handleSpeak} disabled={!sentence}>
               {speaking ? "▶  Speaking…" : "▶  Audio Playback"}
             </button>
           </div>
         </div>
 
-        {/* ── Bottom three-column row ── */}
+        {/* Bottom three-column row */}
         <div style={s.bottomRow}>
-
-          {/* Detected sign + sentence */}
           <div style={s.card}>
             <div style={s.sectionLabel}>Detected Sign</div>
             <div style={s.detectedRow}>
-              <span style={s.detectedEmoji}>{data.prediction ? (signEmoji || "—") : "—"}</span>
+              <span style={s.detectedEmoji}>
+                {isMotion ? (m.motionSign ? (mSignEmoji || "—") : "—") : (d.prediction ? (signEmoji || "—") : "—")}
+              </span>
               <div style={s.detectedRight}>
-                <div style={s.detectedName}>{data.prediction || "Waiting for sign…"}</div>
-                {data.prediction && (
+                <div style={s.detectedName}>
+                  {isMotion ? (m.motionSign || "Waiting for motion…") : (d.prediction || "Waiting for sign…")}
+                </div>
+                {((isMotion && m.motionSign) || (!isMotion && d.prediction)) && (
                   <div style={s.holdRow}>
                     <div style={s.holdTrack}>
-                      <div style={{ ...s.holdFill, width: `${stablePct}%` }} />
+                      <div style={{ ...s.holdFill, width: `${isMotion ? Math.round(m.stablePct * 100) : stablePct}%` }} />
                     </div>
-                    <span style={s.holdNum}>{confPct}%</span>
+                    <span style={s.holdNum}>{isMotion ? mConfPct : confPct}%</span>
                   </div>
                 )}
               </div>
@@ -298,74 +467,68 @@ export default function ASLTranslator({ onNavigate }) {
             <div style={s.divider} />
             <div style={s.sectionLabel}>Sentence</div>
             <div style={s.sentenceArea}>
-              {data.sentence
-                ? <span style={s.sentenceText}>{data.sentence}</span>
+              {sentence
+                ? <span style={s.sentenceText}>{sentence}</span>
                 : <span style={s.sentencePlaceholder}>Your sentence will appear here…</span>
               }
             </div>
             <div style={s.sentenceBtns}>
-              <button style={{ ...s.btn, ...s.btnMini }} onClick={() => send({ action: "space" })} disabled={!connected}>Space</button>
-              <button style={{ ...s.btn, ...s.btnMini }} onClick={() => send({ action: "backspace" })} disabled={!connected}>Backspace</button>
-              <button style={{ ...s.btn, ...s.btnMini, color: "#b91c1c", borderColor: "#fca5a5" }} onClick={() => send({ action: "clear" })} disabled={!connected}>Clear</button>
+              <button style={{ ...s.btn, ...s.btnMini }} onClick={() => sendCurrent({ action: "space" })} disabled={!connected}>Space</button>
+              <button style={{ ...s.btn, ...s.btnMini }} onClick={() => sendCurrent({ action: "backspace" })} disabled={!connected}>Backspace</button>
+              <button style={{ ...s.btn, ...s.btnMini, color: "#b91c1c", border: "1px solid #fca5a5" }} onClick={() => sendCurrent({ action: "clear" })} disabled={!connected}>Clear</button>
             </div>
           </div>
 
-          {/* Suggestions */}
           <div style={s.card}>
             <div style={s.sectionLabel}>Suggestions</div>
             <div style={s.suggestGrid}>
-              {SUGGESTIONS.map(w => (
-                <button key={w} style={{ ...s.btn, ...s.btnSuggest }}>{w}</button>
-              ))}
+              {SUGGESTIONS.map(w => <button key={w} style={{ ...s.btn, ...s.btnSuggest }}>{w}</button>)}
             </div>
           </div>
 
-          {/* Quick tips */}
           <div style={s.card}>
-            <div style={s.sectionLabel}>Quick Tips</div>
+            <div style={s.sectionLabel}>{isMotion ? "Motion Tips" : "Quick Tips"}</div>
             <ol style={s.tipList}>
-              {QUICK_TIPS.map((t, i) => (
+              {(isMotion ? MOTION_TIPS : QUICK_TIPS).map((t, i) => (
                 <li key={i} style={s.tipItem}>{t}</li>
               ))}
             </ol>
+            {isMotion && m.modelClasses.length > 0 && (
+              <>
+                <div style={s.divider} />
+                <div style={s.sectionLabel}>Supported signs</div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 2 }}>
+                  {m.modelClasses.map(c => (
+                    <span key={c} style={s.classTag}>
+                      {c.replace(/[\[\]]/g, "").replace(/_/g, " ")}
+                    </span>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         </div>
 
-        {/* ── Footer bar ── */}
         <div style={s.footerBar}>
           <button style={{ ...s.btn, ...s.btnSecondary }}>Practice Mode</button>
           <button style={{ ...s.btn, ...s.btnSecondary }} onClick={() => setShowHistory(true)}>History</button>
-          <button style={{ ...s.btn, ...s.btnSecondary }} onClick={handleDownload} disabled={!data.sentence}>Download</button>
+          <button style={{ ...s.btn, ...s.btnSecondary }} onClick={handleDownload} disabled={!sentence}>Download</button>
           <div style={{ flex: 1 }} />
           <button style={{ ...s.btn, ...s.btnPrimary }}>Learn ASL →</button>
         </div>
       </div>
 
-      {/* ── Modals ── */}
-      {(showHistory || showDict) && (
-        <div style={s.overlay} onClick={() => { setShowHistory(false); setShowDict(false); }}>
+      {showHistory && (
+        <div style={s.overlay} onClick={() => setShowHistory(false)}>
           <div style={s.modal} onClick={e => e.stopPropagation()}>
             <div style={s.modalHeader}>
-              <span style={s.modalTitle}>{showDict ? "Sign Dictionary" : "Translation History"}</span>
-              <button style={s.modalClose} onClick={() => { setShowHistory(false); setShowDict(false); }}>✕</button>
+              <span style={s.modalTitle}>Translation History</span>
+              <button style={s.modalClose} onClick={() => setShowHistory(false)}>✕</button>
             </div>
-            {showHistory && (
-              history.length === 0
-                ? <p style={{ color: "#999", padding: "12px 0", fontSize: 14 }}>No history yet.</p>
-                : [...history].reverse().map((item, i) => (
-                    <div key={i} style={s.historyRow}>{item}</div>
-                  ))
-            )}
-            {showDict && (
-              <div style={s.dictGrid}>
-                {Object.entries(SIGN_EMOJI).map(([word, emoji]) => (
-                  <div key={word} style={s.dictCell}>
-                    <span style={{ fontSize: 28 }}>{emoji}</span>
-                    <span style={s.dictCellLabel}>{word}</span>
-                  </div>
-                ))}
-              </div>
-            )}
+            {history.length === 0
+              ? <p style={{ color: "#999", padding: "12px 0", fontSize: 14 }}>No history yet.</p>
+              : [...history].reverse().map((item, i) => <div key={i} style={s.historyRow}>{item}</div>)
+            }
           </div>
         </div>
       )}
@@ -373,221 +536,107 @@ export default function ASLTranslator({ onNavigate }) {
   );
 }
 
-// ── Design tokens ─────────────────────────────────────────────────────────────
 const C = {
-  bg:       "#f5f5f0",
-  surface:  "#ffffff",
-  border:   "#d4d4d0",
-  text:     "#1a1a1a",
-  textMid:  "#555550",
-  textDim:  "#888880",
-  primary:  "#1a1a1a",
-  hover:    "#333",
+  bg:      "#f5f5f0",
+  surface: "#ffffff",
+  border:  "#d4d4d0",
+  text:    "#1a1a1a",
+  textMid: "#555550",
+  textDim: "#888880",
+  primary: "#1a1a1a",
 };
 
 const s = {
   root: {
-    minHeight: "100vh",
-    background: C.bg,
+    minHeight: "100vh", background: C.bg,
     fontFamily: "'IBM Plex Sans', system-ui, sans-serif",
-    fontSize: 14,
-    color: C.text,
-    display: "flex",
-    flexDirection: "column",
+    fontSize: 14, color: C.text, display: "flex", flexDirection: "column",
   },
-
-  // Header
   header: {
-    background: C.surface,
-    borderBottom: `1px solid ${C.border}`,
-    padding: "0 28px",
-    height: 52,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
+    background: C.surface, borderBottom: `1px solid ${C.border}`,
+    padding: "0 28px", height: 52, display: "flex",
+    alignItems: "center", justifyContent: "space-between",
   },
-  headerLeft: { display: "flex", alignItems: "center", gap: 10 },
+  headerLeft: { display: "flex", alignItems: "center", gap: 12 },
   headerLogo: { fontSize: 22 },
   headerTitle: { fontSize: 18, fontWeight: 600, letterSpacing: "-0.01em", color: C.text },
   headerNav: { display: "flex", alignItems: "center", gap: 4 },
   headerNavBtn: {
-    padding: "5px 13px",
-    background: "none",
-    border: `1px solid ${C.border}`,
-    borderRadius: 3,
-    fontSize: 13,
-    fontWeight: 500,
-    color: C.textMid,
-    cursor: "pointer",
+    padding: "5px 13px", background: "none", border: `1px solid ${C.border}`,
+    borderRadius: 3, fontSize: 13, fontWeight: 500, color: C.textMid, cursor: "pointer",
   },
   fpsTag: {
-    marginLeft: 8,
-    padding: "4px 10px",
-    background: "#f0f0eb",
-    border: `1px solid ${C.border}`,
-    borderRadius: 3,
-    fontSize: 12,
-    fontFamily: "'IBM Plex Mono', monospace",
-    color: C.textDim,
+    marginLeft: 8, padding: "4px 10px", background: "#f0f0eb",
+    border: `1px solid ${C.border}`, borderRadius: 3,
+    fontSize: 12, fontFamily: "'IBM Plex Mono', monospace", color: C.textDim,
   },
-
-  // Layout
+  modeToggle: { display: "flex", border: `1px solid ${C.border}`, overflow: "hidden" },
+  modeBtn: {
+    padding: "4px 14px", fontSize: 12, fontWeight: 500, background: "none",
+    border: "none", borderRight: `1px solid ${C.border}`,
+    color: C.textMid, cursor: "pointer",
+  },
+  modeBtnActive: { background: C.primary, color: "#fff" },
   body: {
-    flex: 1,
-    display: "flex",
-    flexDirection: "column",
-    gap: 16,
-    padding: "20px 28px 24px",
-    maxWidth: 1200,
-    width: "100%",
-    margin: "0 auto",
+    flex: 1, display: "flex", flexDirection: "column", gap: 16,
+    padding: "20px 28px 24px", maxWidth: 1200, width: "100%", margin: "0 auto",
   },
-  topRow: {
-    display: "grid",
-    gridTemplateColumns: "1fr 320px",
-    gap: 16,
-    alignItems: "start",
-  },
-
-  // Camera
+  topRow: { display: "grid", gridTemplateColumns: "1fr 320px", gap: 16, alignItems: "start" },
   camCol: { display: "flex", flexDirection: "column" },
   camWrap: {
-    position: "relative",
-    background: "#111",
-    border: `1px solid ${C.border}`,
-    aspectRatio: "16/9",
-    overflow: "hidden",
+    position: "relative", background: "#111",
+    border: `1px solid ${C.border}`, aspectRatio: "16/9", overflow: "hidden",
   },
   camImg: { width: "100%", height: "100%", objectFit: "cover", display: "block" },
   camBlank: {
-    height: "100%",
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 10,
+    height: "100%", display: "flex", flexDirection: "column",
+    alignItems: "center", justifyContent: "center", gap: 10,
   },
   camBlankIcon: { fontSize: 36, color: "#444" },
   camBlankText: { color: "#666", fontSize: 13 },
   recIndicator: {
-    position: "absolute",
-    bottom: 12,
-    left: "50%",
-    transform: "translateX(-50%)",
-    background: "rgba(0,0,0,0.72)",
-    color: "#fff",
-    fontSize: 13,
-    fontWeight: 500,
-    padding: "5px 14px",
-    display: "flex",
-    alignItems: "center",
-    gap: 7,
+    position: "absolute", bottom: 48, left: "50%", transform: "translateX(-50%)",
+    background: "rgba(0,0,0,0.72)", color: "#fff", fontSize: 13, fontWeight: 500,
+    padding: "5px 14px", display: "flex", alignItems: "center", gap: 7,
   },
-  recDot: {
-    display: "inline-block",
-    width: 8,
-    height: 8,
-    borderRadius: "50%",
-    background: "#ef4444",
+  recDot: { display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: "#ef4444" },
+  handTag: { position: "absolute", top: 10, right: 10, padding: "3px 10px", fontSize: 12, fontWeight: 500, border: "1px solid" },
+  motionBars: {
+    position: "absolute", bottom: 0, left: 0, right: 0,
+    background: "rgba(0,0,0,0.65)", padding: "8px 14px",
+    display: "flex", flexDirection: "column", gap: 5,
   },
-  handTag: {
-    position: "absolute",
-    top: 10,
-    right: 10,
-    padding: "3px 10px",
-    fontSize: 12,
-    fontWeight: 500,
-    border: "1px solid",
-  },
-
-  // Translation panel
+  motionBarRow: { display: "flex", alignItems: "center", gap: 8 },
+  motionBarLabel: { fontSize: 11, color: "#aaa", width: 42, fontFamily: "'IBM Plex Mono', monospace" },
+  motionBarTrack: { flex: 1, height: 3, background: "rgba(255,255,255,0.15)", overflow: "hidden" },
+  motionBarFill: { height: "100%", transition: "width 0.1s ease" },
+  motionBarNum: { fontSize: 11, color: "#aaa", width: 40, textAlign: "right", fontFamily: "'IBM Plex Mono', monospace" },
   translationCol: {
-    background: C.surface,
-    border: `1px solid ${C.border}`,
-    padding: "18px 20px",
-    display: "flex",
-    flexDirection: "column",
-    gap: 12,
-    minHeight: 260,
+    background: C.surface, border: `1px solid ${C.border}`,
+    padding: "18px 20px", display: "flex", flexDirection: "column", gap: 12, minHeight: 260,
   },
   translationBox: {
-    flex: 1,
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 10,
-    padding: "10px 0",
-    borderTop: `1px solid ${C.border}`,
-    borderBottom: `1px solid ${C.border}`,
+    flex: 1, display: "flex", flexDirection: "column", alignItems: "center",
+    justifyContent: "center", gap: 10, padding: "10px 0",
+    borderTop: `1px solid ${C.border}`, borderBottom: `1px solid ${C.border}`,
   },
-  translationText: {
-    fontSize: 28,
-    fontWeight: 600,
-    letterSpacing: "-0.02em",
-    color: C.text,
-    textAlign: "center",
-    lineHeight: 1.2,
-  },
+  translationText: { fontSize: 28, fontWeight: 600, letterSpacing: "-0.02em", color: C.text, textAlign: "center", lineHeight: 1.2 },
   translationEmoji: { fontSize: 52 },
   confRow: { display: "flex", alignItems: "center", gap: 10 },
-  confBarWrap: {
-    flex: 1,
-    height: 6,
-    background: "#e5e5e0",
-    overflow: "hidden",
-  },
+  confBarWrap: { flex: 1, height: 6, background: "#e5e5e0", overflow: "hidden" },
   confBar: { height: "100%", transition: "width 0.2s ease" },
   confNum: { fontSize: 13, fontFamily: "'IBM Plex Mono', monospace", fontWeight: 500, minWidth: 36, textAlign: "right" },
-
-  // Advanced alternatives panel
-  advancedToggle: {
-    display: "flex", alignItems: "center", fontSize: 12,
-    fontWeight: 500, color: C.textMid, cursor: "pointer",
-    userSelect: "none",
-  },
-  altsPanel: {
-    border: `1px solid ${C.border}`,
-    padding: "10px 12px",
-    background: "#fafaf8",
-    display: "flex",
-    flexDirection: "column",
-    gap: 7,
-  },
-  altsPanelTitle: {
-    fontSize: 10, fontWeight: 600, letterSpacing: "0.1em",
-    textTransform: "uppercase", color: C.textDim, marginBottom: 2,
-  },
+  advancedToggle: { display: "flex", alignItems: "center", fontSize: 12, fontWeight: 500, color: C.textMid, cursor: "pointer", userSelect: "none" },
+  altsPanel: { border: `1px solid ${C.border}`, padding: "10px 12px", background: "#fafaf8", display: "flex", flexDirection: "column", gap: 7 },
+  altsPanelTitle: { fontSize: 10, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase", color: C.textDim, marginBottom: 2 },
   altRow: { display: "flex", alignItems: "center", gap: 8 },
   altLabel: { fontSize: 13, minWidth: 68, fontFamily: "'IBM Plex Mono', monospace" },
   altBarWrap: { flex: 1, height: 5, background: "#e5e5e0", overflow: "hidden" },
   altBar: { height: "100%", transition: "width 0.15s ease" },
   altPct: { fontSize: 12, fontFamily: "'IBM Plex Mono', monospace", minWidth: 32, textAlign: "right" },
-
-  // Bottom row
-  bottomRow: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr 1fr",
-    gap: 16,
-  },
-  card: {
-    background: C.surface,
-    border: `1px solid ${C.border}`,
-    padding: "16px 18px",
-    display: "flex",
-    flexDirection: "column",
-    gap: 10,
-  },
-  sectionLabel: {
-    fontSize: 11,
-    fontWeight: 600,
-    letterSpacing: "0.08em",
-    textTransform: "uppercase",
-    color: C.textDim,
-    marginBottom: 2,
-  },
-
-  // Detected sign
+  bottomRow: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 },
+  card: { background: C.surface, border: `1px solid ${C.border}`, padding: "16px 18px", display: "flex", flexDirection: "column", gap: 10 },
+  sectionLabel: { fontSize: 11, fontWeight: 600, letterSpacing: "0.08em", textTransform: "uppercase", color: C.textDim, marginBottom: 2 },
   detectedRow: { display: "flex", alignItems: "center", gap: 14 },
   detectedEmoji: { fontSize: 38, lineHeight: 1, minWidth: 44 },
   detectedRight: { flex: 1, display: "flex", flexDirection: "column", gap: 6 },
@@ -596,132 +645,25 @@ const s = {
   holdTrack: { flex: 1, height: 5, background: "#e5e5e0", overflow: "hidden" },
   holdFill: { height: "100%", background: C.primary, transition: "width 0.1s linear" },
   holdNum: { fontSize: 12, fontFamily: "'IBM Plex Mono', monospace", color: C.textDim, minWidth: 32, textAlign: "right" },
-
   divider: { borderTop: `1px solid ${C.border}`, margin: "2px 0" },
-
-  // Sentence
-  sentenceArea: {
-    minHeight: 48,
-    padding: "10px 12px",
-    background: "#fafaf8",
-    border: `1px solid ${C.border}`,
-    fontSize: 15,
-    fontWeight: 500,
-    lineHeight: 1.5,
-    color: C.text,
-    wordBreak: "break-word",
-  },
+  sentenceArea: { minHeight: 48, padding: "10px 12px", background: "#fafaf8", border: `1px solid ${C.border}`, fontSize: 15, fontWeight: 500, lineHeight: 1.5, color: C.text, wordBreak: "break-word" },
   sentenceText: { color: C.text },
   sentencePlaceholder: { color: C.textDim, fontWeight: 400, fontStyle: "italic" },
   sentenceBtns: { display: "flex", gap: 6 },
-
-  // Suggestions
   suggestGrid: { display: "flex", flexWrap: "wrap", gap: 6 },
-
-  // Tips
   tipList: { paddingLeft: 18, display: "flex", flexDirection: "column", gap: 7 },
   tipItem: { fontSize: 13, color: C.textMid, lineHeight: 1.4 },
-
-  // Buttons
-  btn: {
-    padding: "7px 14px",
-    border: `1px solid ${C.border}`,
-    borderRadius: 3,
-    fontSize: 13,
-    fontWeight: 500,
-    cursor: "pointer",
-    background: C.surface,
-    color: C.text,
-    transition: "background 0.1s",
-    lineHeight: 1.4,
-  },
-  btnPrimary: {
-    background: C.primary,
-    color: "#fff",
-    border: `1px solid ${C.primary}`,
-  },
-  btnSecondary: {
-    background: C.surface,
-    color: C.text,
-    border: `1px solid ${C.border}`,
-  },
-  btnMini: {
-    padding: "5px 10px",
-    fontSize: 12,
-    flex: 1,
-  },
-  btnSuggest: {
-    padding: "6px 12px",
-    fontSize: 13,
-    fontWeight: 600,
-    letterSpacing: "0.04em",
-  },
-
-  // Footer
-  footerBar: {
-    display: "flex",
-    gap: 8,
-    alignItems: "center",
-    paddingTop: 4,
-  },
-
-  // Modals
-  overlay: {
-    position: "fixed",
-    inset: 0,
-    background: "rgba(0,0,0,0.35)",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    zIndex: 100,
-  },
-  modal: {
-    background: C.surface,
-    border: `1px solid ${C.border}`,
-    padding: "24px 28px",
-    width: "min(500px, 92vw)",
-    maxHeight: "78vh",
-    overflowY: "auto",
-    boxShadow: "0 8px 32px rgba(0,0,0,0.16)",
-  },
-  modalHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 18,
-    paddingBottom: 14,
-    borderBottom: `1px solid ${C.border}`,
-  },
+  classTag: { fontSize: 11, padding: "2px 7px", border: `1px solid ${C.border}`, background: "#fafaf8", color: C.textMid, fontFamily: "'IBM Plex Mono', monospace" },
+  btn: { padding: "7px 14px", border: `1px solid ${C.border}`, borderRadius: 3, fontSize: 13, fontWeight: 500, cursor: "pointer", background: C.surface, color: C.text, transition: "background 0.1s", lineHeight: 1.4 },
+  btnPrimary: { background: C.primary, color: "#fff", border: `1px solid ${C.primary}` },
+  btnSecondary: { background: C.surface, color: C.text, border: `1px solid ${C.border}` },
+  btnMini: { padding: "5px 10px", fontSize: 12, flex: 1 },
+  btnSuggest: { padding: "6px 12px", fontSize: 13, fontWeight: 600, letterSpacing: "0.04em" },
+  footerBar: { display: "flex", gap: 8, alignItems: "center", paddingTop: 4 },
+  overlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 },
+  modal: { background: C.surface, border: `1px solid ${C.border}`, padding: "24px 28px", width: "min(500px, 92vw)", maxHeight: "78vh", overflowY: "auto", boxShadow: "0 8px 32px rgba(0,0,0,0.16)" },
+  modalHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, paddingBottom: 14, borderBottom: `1px solid ${C.border}` },
   modalTitle: { fontSize: 16, fontWeight: 600, color: C.text },
-  modalClose: {
-    background: "none",
-    border: `1px solid ${C.border}`,
-    borderRadius: 3,
-    width: 28,
-    height: 28,
-    cursor: "pointer",
-    fontSize: 14,
-    color: C.textMid,
-  },
-  historyRow: {
-    padding: "9px 0",
-    borderBottom: `1px solid #f0f0eb`,
-    fontSize: 14,
-    color: C.textMid,
-  },
-  dictGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(4, 1fr)",
-    gap: 10,
-  },
-  dictCell: {
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    gap: 6,
-    padding: "12px 8px",
-    border: `1px solid ${C.border}`,
-    background: "#fafaf8",
-  },
-  dictCellLabel: { fontSize: 12, fontWeight: 500, color: C.textMid, textAlign: "center" },
+  modalClose: { background: "none", border: `1px solid ${C.border}`, borderRadius: 3, width: 28, height: 28, cursor: "pointer", fontSize: 14, color: C.textMid },
+  historyRow: { padding: "9px 0", borderBottom: `1px solid #f0f0eb`, fontSize: 14, color: C.textMid },
 };
