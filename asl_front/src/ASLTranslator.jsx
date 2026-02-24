@@ -15,6 +15,41 @@ const SIGN_EMOJI = {
 
 const SUGGESTIONS = ["LOVE", "HELLO", "MORE", "HELP", "GOOD", "STOP", "YES", "NO", "WANT", "PLAY"];
 
+// Context-aware completions: given the current partial sentence, suggest next words
+const WORD_COMPLETIONS = {
+  "HELLO": ["MY", "NAME", "HOW", "ARE", "YOU"],
+  "MY":    ["NAME", "HELP", "FRIEND", "BOOK", "WANT"],
+  "NAME":  ["IS", "GOOD", "YES", "FRIEND"],
+  "HOW":   ["ARE", "YOU", "GOOD", "HELP"],
+  "ARE":   ["YOU", "GOOD", "YES", "STOP"],
+  "YOU":   ["GOOD", "WANT", "HELP", "STOP", "PLAY", "LOVE"],
+  "I":     ["LOVE", "WANT", "NEED", "HELP", "GOOD"],
+  "LOVE":  ["YOU", "GOOD", "MORE", "PLAY"],
+  "WANT":  ["MORE", "HELP", "GOOD", "STOP", "PLAY"],
+  "MORE":  ["HELP", "GOOD", "STOP", "PLAY", "WANT"],
+  "HELP":  ["YOU", "ME", "GOOD", "MORE", "YES"],
+  "STOP":  ["MORE", "GOOD", "YES", "NO"],
+  "GOOD":  ["MORE", "STOP", "YES", "LOVE", "PLAY"],
+  "YES":   ["MORE", "GOOD", "LOVE", "STOP"],
+  "NO":    ["MORE", "STOP", "GOOD", "HELP"],
+  "PLEASE": ["HELP", "MORE", "STOP", "GOOD"],
+  "THANK":  ["YOU", "GOOD", "YES"],
+  "WHERE":  ["YOU", "HELP", "GOOD", "NAME"],
+};
+
+function getContextSuggestions(sentence) {
+  if (!sentence || !sentence.trim()) return SUGGESTIONS.slice(0, 8);
+  const words = sentence.trim().toUpperCase().split(/\s+/);
+  const lastWord = words[words.length - 1];
+  // Check if last word is a partial letter sequence (all caps single chars)
+  const isSpellingWord = lastWord.length > 1 && /^[A-Z]+$/.test(lastWord);
+  const lookupWord = isSpellingWord ? lastWord : lastWord;
+  const completions = WORD_COMPLETIONS[lookupWord];
+  if (completions) return completions.slice(0, 8);
+  // Fall back to default suggestions
+  return SUGGESTIONS.slice(0, 8);
+}
+
 const QUICK_TIPS = [
   "Position hands clearly in frame",
   "Ensure good, even lighting",
@@ -68,14 +103,18 @@ export default function ASLTranslator({ onNavigate }) {
     fps: 0, modelClasses: [],
   });
 
-  const [active, setActive]           = useState(false);
-  const [history, setHistory]         = useState([]);
-  const [speaking, setSpeaking]       = useState(false);
-  const [showHistory, setShowHistory] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [restarting, setRestarting]   = useState(false);
-  const [staticError, setStaticError]  = useState("");
-  const [motionError, setMotionError]  = useState("");
+  const [active, setActive]                 = useState(false);
+  const [history, setHistory]               = useState([]);
+  const [speaking, setSpeaking]             = useState(false);
+  const [showHistory, setShowHistory]       = useState(false);
+  const [showAdvanced, setShowAdvanced]     = useState(false);
+  const [restarting, setRestarting]         = useState(false);
+  const [staticError, setStaticError]       = useState("");
+  const [motionError, setMotionError]       = useState("");
+  const [confidenceThreshold, setConfidenceThreshold] = useState(CONFIDENCE_THRESHOLD);
+  const [twoPlayer, setTwoPlayer]           = useState(false);
+  const [tpRole, setTpRole]                 = useState("signer"); // "signer" | "reader"
+  const [copied, setCopied]                 = useState(false);
 
   const handleRestart = useCallback(() => {
     setRestarting(true);
@@ -195,7 +234,7 @@ export default function ASLTranslator({ onNavigate }) {
   const sentence  = isMotion ? m.sentence : d.sentence;
 
   const confPct   = Math.round(d.confidence * 100);
-  const confGood  = d.confidence >= CONFIDENCE_THRESHOLD;
+  const confGood  = d.confidence >= confidenceThreshold;
   const stablePct = Math.round(d.stablePct * 100);
   const signEmoji = SIGN_EMOJI[d.prediction] || "";
 
@@ -213,6 +252,14 @@ export default function ASLTranslator({ onNavigate }) {
     speechSynthesis.speak(utt);
   };
 
+  const handleCopy = () => {
+    if (!sentence) return;
+    navigator.clipboard.writeText(sentence).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
   const handleDownload = () => {
     if (!sentence) return;
     const blob = new Blob([sentence], { type: "text/plain" });
@@ -221,6 +268,41 @@ export default function ASLTranslator({ onNavigate }) {
     a.download = "asl-translation.txt";
     a.click();
   };
+
+  // Two-player: in reader mode just show the sentence big
+  if (twoPlayer && tpRole === "reader") return (
+    <div style={{ ...s.root, background:"#0f0f0f" }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: #0f0f0f; }
+        button { font-family: 'IBM Plex Sans', sans-serif; }
+      `}</style>
+      <header style={{ ...s.header, background:"#1a1a1a", borderBottomColor:"#333" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+          <img src="/logo192.png" alt="NeuroSign" style={{ ...s.headerLogo }} />
+          <span style={{ ...s.headerTitle, color:"#fff" }}>Reader View</span>
+          <span style={{ fontSize:12, color:"#888", padding:"2px 8px", border:"1px solid #333" }}>Two-Player Mode</span>
+        </div>
+        <button style={{ ...s.headerNavBtn, borderColor:"#333", color:"#888" }} onClick={() => setTpRole("signer")}>
+          ← Back to Signer
+        </button>
+      </header>
+      <div style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:40, gap:32 }}>
+        <div style={{ fontSize:"clamp(28px,6vw,72px)", fontWeight:700, color:"#fff", textAlign:"center", lineHeight:1.3, maxWidth:900, wordBreak:"break-word", minHeight:120 }}>
+          {sentence || <span style={{ color:"#444", fontWeight:400, fontSize:"clamp(20px,4vw,48px)" }}>Waiting for signs…</span>}
+        </div>
+        <div style={{ display:"flex", gap:12 }}>
+          <button style={{ padding:"10px 24px", background:"#1a1a1a", border:"1px solid #333", color:"#888", fontSize:14, cursor:"pointer" }}
+            onClick={() => sendCurrent({ action:"clear" })}>Clear</button>
+          <button style={{ padding:"10px 24px", background:"#1a1a1a", border:"1px solid #333", color:"#888", fontSize:14, cursor:"pointer" }}
+            onClick={handleSpeak} disabled={!sentence}>▶ Speak</button>
+          <button style={{ padding:"10px 24px", background:"#1a1a1a", border:"1px solid #333", color:"#888", fontSize:14, cursor:"pointer" }}
+            onClick={handleCopy} disabled={!sentence}>{copied ? "✓ Copied" : "Copy"}</button>
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div style={s.root}>
@@ -236,8 +318,8 @@ export default function ASLTranslator({ onNavigate }) {
       {/* Header */}
       <header style={s.header}>
         <div style={s.headerLeft}>
-          <span style={s.headerLogo}></span>
-          <span style={s.headerTitle}>ASL Translator</span>
+          <img src="/logo192.png" alt="NeuroSign" style={s.headerLogo} />
+          <span style={s.headerTitle}>NeuroSign</span>
           <div style={s.modeToggle}>
             <button
               style={{ ...s.modeBtn, ...(mode === "static" ? s.modeBtnActive : {}) }}
@@ -480,10 +562,30 @@ export default function ASLTranslator({ onNavigate }) {
           </div>
 
           <div style={s.card}>
-            <div style={s.sectionLabel}>Suggestions</div>
-            <div style={s.suggestGrid}>
-              {SUGGESTIONS.map(w => <button key={w} style={{ ...s.btn, ...s.btnSuggest }}>{w}</button>)}
+            <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:2 }}>
+              <div style={s.sectionLabel}>Suggestions</div>
+              {sentence && <span style={{ fontSize:11, color:C.textDim }}>based on context</span>}
             </div>
+            <div style={s.suggestGrid}>
+              {getContextSuggestions(sentence).map(w => (
+                <button key={w} style={{ ...s.btn, ...s.btnSuggest, ...(connected ? {} : { opacity:0.45 }) }}
+                  title={connected ? `Insert "${w}" into sentence` : "Start camera to use suggestions"}
+                  onClick={() => {
+                    if (connected) {
+                      sendCurrent({ action:"insert_word", word:w });
+                    } else {
+                      // Fallback: copy to clipboard if camera not active
+                      navigator.clipboard.writeText(w).catch(()=>{});
+                      setCopied(true); setTimeout(() => setCopied(false), 1500);
+                    }
+                  }}>
+                  {w}
+                </button>
+              ))}
+            </div>
+            <p style={{ fontSize:11, color:C.textDim, marginTop:4 }}>
+              {connected ? "Tap to insert word into sentence" : "Tap to copy · start camera to insert"}
+            </p>
           </div>
 
           <div style={s.card}>
@@ -510,11 +612,32 @@ export default function ASLTranslator({ onNavigate }) {
         </div>
 
         <div style={s.footerBar}>
-          <button style={{ ...s.btn, ...s.btnSecondary }}>Practice Mode</button>
+          <button style={{ ...s.btn, ...s.btnSecondary }} onClick={() => onNavigate?.("practice")}>Practice Mode</button>
           <button style={{ ...s.btn, ...s.btnSecondary }} onClick={() => setShowHistory(true)}>History</button>
+          <button style={{ ...s.btn, ...s.btnSecondary }} onClick={handleCopy} disabled={!sentence}>
+            {copied ? "✓ Copied!" : "Copy"}
+          </button>
           <button style={{ ...s.btn, ...s.btnSecondary }} onClick={handleDownload} disabled={!sentence}>Download</button>
-          <div style={{ flex: 1 }} />
-          <button style={{ ...s.btn, ...s.btnPrimary }}>Learn ASL →</button>
+          <button style={{ ...s.btn, ...(twoPlayer ? s.btnPrimary : s.btnSecondary) }}
+            onClick={() => { setTwoPlayer(t => !t); if (!twoPlayer) setTpRole("signer"); }}>
+            {twoPlayer ? "✓ Two-Player" : "Two-Player"}
+          </button>
+          {twoPlayer && (
+            <button style={{ ...s.btn, ...s.btnPrimary }} onClick={() => setTpRole("reader")}>
+              👀 Reader View
+            </button>
+          )}
+          <div style={{ flex:1 }} />
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <span style={{ fontSize:11, color:C.textDim, fontFamily:"'IBM Plex Mono', monospace", whiteSpace:"nowrap" }}>
+              Threshold: {Math.round(confidenceThreshold * 100)}%
+            </span>
+            <input type="range" min={40} max={95} step={5}
+              value={Math.round(confidenceThreshold * 100)}
+              onChange={e => setConfidenceThreshold(Number(e.target.value) / 100)}
+              style={{ width:90, accentColor:C.text, cursor:"pointer" }} />
+          </div>
+          <button style={{ ...s.btn, ...s.btnPrimary }} onClick={() => onNavigate?.("dictionary")}>Dictionary →</button>
         </div>
       </div>
 
@@ -558,7 +681,7 @@ const s = {
     alignItems: "center", justifyContent: "space-between",
   },
   headerLeft: { display: "flex", alignItems: "center", gap: 12 },
-  headerLogo: { fontSize: 22 },
+  headerLogo: { width: 28, height: 28, borderRadius: 6, objectFit: "cover" },
   headerTitle: { fontSize: 18, fontWeight: 600, letterSpacing: "-0.01em", color: C.text },
   headerNav: { display: "flex", alignItems: "center", gap: 4 },
   headerNavBtn: {

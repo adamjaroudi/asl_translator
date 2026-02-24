@@ -275,6 +275,16 @@ async def translator_handler(websocket):
                     last_sign = ""
                 elif cmd.get("action") == "clear":
                     sentence = ""; last_sign = ""
+                elif cmd.get("action") == "add_letter":
+                    letter = str(cmd.get("letter", "")).upper()
+                    if letter and letter.isalpha():
+                        sentence += letter; last_sign = ""
+                elif cmd.get("action") == "insert_word":
+                    word = str(cmd.get("word", "")).upper().strip()
+                    if word:
+                        if sentence and not sentence.endswith(" "):
+                            sentence += " "
+                        sentence += word + " "; last_sign = ""
             except Exception:
                 pass
 
@@ -417,6 +427,16 @@ async def motion_translator_handler(websocket):
                     last_sign = ""
                 elif cmd.get("action") == "clear":
                     sentence = ""; last_sign = ""; frame_buffer.clear()
+                elif cmd.get("action") == "add_letter":
+                    letter = str(cmd.get("letter", "")).upper()
+                    if letter and letter.isalpha():
+                        sentence += letter; last_sign = ""
+                elif cmd.get("action") == "insert_word":
+                    word = str(cmd.get("word", "")).upper().strip()
+                    if word:
+                        if sentence and not sentence.endswith(" "):
+                            sentence += " "
+                        sentence += word + " "; last_sign = ""
             except Exception:
                 pass
 

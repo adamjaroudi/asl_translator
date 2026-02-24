@@ -74,11 +74,9 @@ export default function Home({ onNavigate }) {
 function Logo({ small }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-      <div style={{
-        width: small ? 22 : 26, height: small ? 22 : 26, background: C.text, color: "#fff",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        fontSize: small ? 11 : 13, fontWeight: 700, letterSpacing: "-0.02em", flexShrink: 0,
-      }}>N</div>
+      <img src="/logo192.png" alt="NeuroSign" style={{
+        width: small ? 22 : 26, height: small ? 22 : 26, borderRadius: 5, objectFit: "cover", flexShrink: 0,
+      }} />
       <span style={{ fontSize: small ? 13 : 15, fontWeight: 700, letterSpacing: "-0.02em", color: C.text }}>
         NeuroSign
       </span>

@@ -154,9 +154,37 @@ def main():
     print("\nClassification Report:")
     print(classification_report(y_test, y_pred, zero_division=0))
 
+    # Confusion matrix — only show meaningful mistakes
+    from sklearn.metrics import confusion_matrix
+    classes_list = sorted(set(y_test))
+    cm = confusion_matrix(y_test, y_pred, labels=classes_list)
+    errors = []
+    for i, true_cls in enumerate(classes_list):
+        for j, pred_cls in enumerate(classes_list):
+            if i != j and cm[i][j] > 0:
+                errors.append((cm[i][j], true_cls, pred_cls))
+    if errors:
+        errors.sort(reverse=True)
+        print("\nTop confusions (true -> predicted):")
+        for count, t, p in errors[:10]:
+            print(f"  {t:<20} -> {p:<20} ({count}x)")
+
     os.makedirs(MODEL_DIR, exist_ok=True)
     with open(MODEL_FILE, "wb") as f:
         pickle.dump(clf, f)
+
+    # Emit structured result for frontend confusion matrix display
+    import json as _json
+    per_class_acc = {}
+    for cls in classes_list:
+        mask = y_test == cls
+        if mask.sum() > 0:
+            per_class_acc[cls] = float((y_pred[mask] == cls).mean())
+    top_confusions = [
+        {"true": t, "pred": p, "count": int(c)}
+        for c, t, p in sorted(errors, reverse=True)[:15]
+    ] if errors else []
+    print(f"TRAIN_RESULT:{_json.dumps({'accuracy': float(accuracy), 'per_class': per_class_acc, 'confusions': top_confusions})}")
 
     elapsed = time.time() - t_start
     print(f"\nTotal training time: {elapsed:.0f}s ({elapsed/60:.1f} min)")

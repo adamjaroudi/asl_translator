@@ -27,6 +27,10 @@ import sys
 import pickle
 import collections
 
+# Force UTF-8 output on Windows to avoid cp1252 encoding errors
+if sys.stdout.encoding != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 import numpy as np
 
 # ── Constants (must match server.py) ─────────────────────────────────────────
@@ -139,7 +143,37 @@ def train(X, y):
     if acc < 0.5 and n_samples > 20:
         print("[warn]  Low accuracy — collect more sequences (aim for 50+ per sign).")
 
-    return clf, classes, acc
+    # Per-class accuracy
+    from sklearn.metrics import classification_report, confusion_matrix
+    y_pred = clf.predict(X_test)
+    print("\n[train] Per-sign accuracy:")
+    report = classification_report(y_test, y_pred, zero_division=0, output_dict=True)
+    for cls in classes:
+        display = cls.strip("[]").replace("_", " ").replace("-", " ").title()
+        r = report.get(cls, {})
+        prec = r.get("precision", 0) * 100
+        rec  = r.get("recall",    0) * 100
+        sup  = int(r.get("support", 0))
+        bar  = "#" * int(rec / 10)
+        flag = " <-- low" if rec < 60 and sup > 0 else ""
+        print(f"  {display:<14} precision {prec:4.0f}%  recall {rec:4.0f}%  [{bar:<10}]  n={sup}{flag}")
+
+    # Confusion matrix (only show off-diagonal mistakes)
+    cm     = confusion_matrix(y_test, y_pred, labels=classes)
+    errors = []
+    for i, true_cls in enumerate(classes):
+        for j, pred_cls in enumerate(classes):
+            if i != j and cm[i][j] > 0:
+                t = true_cls.strip("[]").replace("_"," ").title()
+                p = pred_cls.strip("[]").replace("_"," ").title()
+                errors.append((cm[i][j], t, p))
+    if errors:
+        errors.sort(reverse=True)
+        print("\n[train] Top confusions (true -> predicted):")
+        for count, t, p in errors[:8]:
+            print(f"  {t:<14} -> {p:<14} ({count}x)")
+
+    return clf, classes, acc, report, errors
 
 
 # ── Save ──────────────────────────────────────────────────────────────────────
@@ -155,9 +189,8 @@ def save_model(clf, classes, acc):
     }
     with open(MODEL_FILE, "wb") as f:
         pickle.dump(payload, f)
-    print(f"[train] Model saved → {MODEL_FILE}")
+    print(f"[train] Model saved -> {MODEL_FILE}")
     print(f"[train] Classes: {', '.join(c.strip('[]').replace('_',' ') for c in classes)}")
-
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
@@ -168,8 +201,20 @@ if __name__ == "__main__":
 
     sequences = load_data(DATA_FILE)
     X, y      = build_dataset(sequences)
-    clf, classes, acc = train(X, y)
+    clf, classes, acc, report, errors = train(X, y)
     save_model(clf, classes, acc)
 
-    print("\n[done]  Restart the server (↺ Restart Server) to load the new model.")
+    # Emit structured result for frontend display
+    import json as _json
+    per_class_acc = {
+        cls: float(report.get(cls, {}).get("recall", 0))
+        for cls in classes
+    }
+    top_confusions = [
+        {"true": t, "pred": p, "count": int(c)}
+        for c, t, p in sorted(errors, reverse=True)[:15]
+    ] if errors else []
+    print(f"TRAIN_RESULT:{_json.dumps({'accuracy': float(acc), 'per_class': per_class_acc, 'confusions': top_confusions})}")
+
+    print("\n[done]  Restart the server to load the new model.")
     print("=" * 50)

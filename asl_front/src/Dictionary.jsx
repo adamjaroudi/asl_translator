@@ -3,6 +3,8 @@ import { useState, useRef, useEffect, useCallback } from "react";
 // Shared word list key — also read by CollectData
 export const CUSTOM_WORDS_KEY = "asl_custom_words";
 
+const WS_VERIFY_URL = "ws://localhost:8765";
+
 const YT_SEARCH_URL = (word) =>
   `https://www.youtube.com/results?search_query=${encodeURIComponent("ASL sign " + word)}`;
 
@@ -57,7 +59,7 @@ const C = {
 
 export default function Dictionary({ onNavigate }) {
   const [query, setQuery]           = useState("");
-  const [activeWord, setActiveWord] = useState(null);   // currently viewed word object
+  const [activeWord, setActiveWord] = useState(null);
   const [savedWords, setSavedWords] = useState(STARTER_WORDS.map(w => ({ word: w, videoId: null })));
   const [customWords, setCustomWords] = useState(loadCustomWords);
 
@@ -71,6 +73,41 @@ export default function Dictionary({ onNavigate }) {
   const [showPinModal, setShowPinModal] = useState(false);
   const [pinInput, setPinInput]         = useState("");
   const [pinError, setPinError]         = useState("");
+
+  // Webcam verify
+  const [verifyOn, setVerifyOn]         = useState(false);
+  const [verifyFrame, setVerifyFrame]   = useState(null);
+  const [verifyPred, setVerifyPred]     = useState("");
+  const [verifyConf, setVerifyConf]     = useState(0);
+  const [verifyHands, setVerifyHands]   = useState(0);
+  const verifyWsRef = useRef(null);
+
+  const startVerify = useCallback(() => {
+    if (verifyWsRef.current?.readyState === WebSocket.OPEN) return;
+    const ws = new WebSocket(WS_VERIFY_URL);
+    ws.onopen  = () => setVerifyOn(true);
+    ws.onclose = () => { setVerifyOn(false); setVerifyFrame(null); verifyWsRef.current = null; };
+    ws.onerror = () => ws.close();
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.frame      !== undefined) setVerifyFrame(msg.frame);
+        if (msg.prediction !== undefined) setVerifyPred(msg.prediction);
+        if (msg.confidence !== undefined) setVerifyConf(msg.confidence);
+        if (msg.num_hands  !== undefined) setVerifyHands(msg.num_hands);
+      } catch {}
+    };
+    verifyWsRef.current = ws;
+  }, []);
+
+  const stopVerify = useCallback(() => {
+    verifyWsRef.current?.close();
+    verifyWsRef.current = null;
+    setVerifyOn(false); setVerifyFrame(null); setVerifyPred(""); setVerifyConf(0);
+  }, []);
+
+  // Stop verify when navigating away or switching words
+  useEffect(() => () => verifyWsRef.current?.close(), []);
 
   const inputRef = useRef(null);
 
@@ -86,6 +123,8 @@ export default function Dictionary({ onNavigate }) {
   const handleSelectWord = (wordObj) => {
     setActiveWord(wordObj);
     setQuery(wordObj.word);
+    // stop verify camera when switching words
+    stopVerify();
   };
 
   const handleSearch = useCallback(() => {
@@ -157,15 +196,20 @@ export default function Dictionary({ onNavigate }) {
       {/* ── Header ── */}
       <header style={s.header}>
         <div style={s.headerLeft}>
-          <button style={s.backBtn} onClick={() => onNavigate("translator")}>← Translator</button>
+          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+            <img src="/logo192.png" alt="NeuroSign" style={{ width:24, height:24, borderRadius:5, objectFit:"cover" }} />
+            <span style={{ fontSize:15, fontWeight:700, letterSpacing:"-0.02em" }}>NeuroSign</span>
+          </div>
           <span style={s.divV} />
-          <span style={s.headerTitle}>ASL Dictionary</span>
+          <span style={s.headerTitle}>Dictionary</span>
         </div>
         <div style={s.headerRight}>
+          <button style={s.headerNavBtn} onClick={() => onNavigate("home")}>← Home</button>
+          <button style={s.headerNavBtn} onClick={() => onNavigate("translator")}>Translator</button>
+          <button style={s.headerNavBtn} onClick={() => onNavigate("collect")}>Collect Data</button>
           <button style={{ ...s.btn, ...s.btnPrimary }} onClick={() => setShowAddModal(true)}>
             + Add Word
           </button>
-          <button style={s.headerNavBtn} onClick={() => onNavigate("collect")}>Collect Data →</button>
         </div>
       </header>
 
@@ -328,6 +372,68 @@ export default function Dictionary({ onNavigate }) {
                   </ol>
                 </div>
               )}
+
+              {/* Try this sign — webcam practice panel */}
+              <div style={s.verifyPanel}>
+                <div style={s.verifyHeader}>
+                  <div>
+                    <div style={s.verifyTitle}>Try this sign</div>
+                    <div style={s.verifySub}>Hold up the sign for "{activeWord.word}" — the model will tell you if it recognised it.</div>
+                  </div>
+                  <button
+                    style={{ ...s.btn, ...(verifyOn ? s.btnDanger : s.btnPrimary) }}
+                    onClick={verifyOn ? stopVerify : startVerify}
+                  >
+                    {verifyOn ? "■ Stop" : "▶ Start Camera"}
+                  </button>
+                </div>
+                {verifyOn && (
+                  <div style={s.verifyBody}>
+                    <div style={s.verifyCamWrap}>
+                      {verifyFrame
+                        ? <img src={`data:image/jpeg;base64,${verifyFrame}`} alt="cam" style={s.verifyCamImg} />
+                        : <div style={s.verifyCamBlank}>
+                            <span style={{ fontSize:24, color:"#555" }}>◻</span>
+                            <span style={{ fontSize:12, color:"#888" }}>Connecting…</span>
+                          </div>
+                      }
+                      {verifyHands > 0 && (
+                        <div style={{ ...s.verifyHandTag, background:"#e8f5e9", color:"#2e7d32", border:"1px solid #a5d6a7" }}>
+                          {verifyHands} hand{verifyHands > 1 ? "s" : ""}
+                        </div>
+                      )}
+                    </div>
+                    <div style={s.verifyReadout}>
+                      {verifyPred ? (
+                        <>
+                          <div style={{ fontSize:11, fontWeight:600, letterSpacing:"0.08em", textTransform:"uppercase", color:"#888880", marginBottom:6 }}>Detected</div>
+                          <div style={{
+                            fontSize:28, fontWeight:700, letterSpacing:"-0.02em",
+                            color: verifyPred.toLowerCase() === activeWord.word.toLowerCase() ? "#2e7d32" : "#1a1a1a",
+                            lineHeight:1.1, marginBottom:8,
+                          }}>
+                            {verifyPred}
+                            {verifyPred.toLowerCase() === activeWord.word.toLowerCase() && <span style={{ marginLeft:8, fontSize:20 }}>✓</span>}
+                          </div>
+                          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                            <div style={{ flex:1, height:5, background:"#e5e5e0", overflow:"hidden" }}>
+                              <div style={{ height:"100%", width:`${Math.round(verifyConf*100)}%`, background: verifyConf >= 0.7 ? "#2e7d32" : "#b45309", transition:"width 0.15s" }} />
+                            </div>
+                            <span style={{ fontSize:12, fontFamily:"'IBM Plex Mono', monospace", color:"#555550", minWidth:36 }}>{Math.round(verifyConf*100)}%</span>
+                          </div>
+                          {verifyPred.toLowerCase() !== activeWord.word.toLowerCase() && verifyConf >= 0.6 && (
+                            <div style={{ marginTop:8, fontSize:12, color:"#b45309" }}>
+                              Not matching — adjust your hand shape and try again
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <div style={{ fontSize:13, color:"#888880" }}>Show your hand to the camera…</div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -594,4 +700,17 @@ const s = {
   },
   btnPrimary:   { background: "#1a1a1a", color: "#fff", border: "1px solid #1a1a1a" },
   btnSecondary: { background: C.surface, color: C.text, border: `1px solid ${C.border}` },
+  btnDanger:    { background: "#b91c1c", color: "#fff", border: "1px solid #b91c1c" },
+
+  // Webcam verify panel
+  verifyPanel: { border: `1px solid ${C.border}`, background: C.surface, overflow: "hidden" },
+  verifyHeader: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, padding: "14px 16px", borderBottom: `1px solid ${C.border}` },
+  verifyTitle: { fontSize: 14, fontWeight: 600, color: C.text, marginBottom: 3 },
+  verifySub:   { fontSize: 12, color: C.textDim, lineHeight: 1.5, maxWidth: 420 },
+  verifyBody:  { display: "grid", gridTemplateColumns: "200px 1fr", gap: 0 },
+  verifyCamWrap: { position: "relative", background: "#111", aspectRatio: "4/3", overflow: "hidden", borderRight: `1px solid ${C.border}` },
+  verifyCamImg:  { width: "100%", height: "100%", objectFit: "cover", display: "block" },
+  verifyCamBlank:{ height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 6 },
+  verifyHandTag: { position: "absolute", top: 6, right: 6, padding: "2px 7px", fontSize: 11, fontWeight: 500 },
+  verifyReadout: { padding: "16px 18px", display: "flex", flexDirection: "column", justifyContent: "center" },
 };

@@ -75,11 +75,13 @@ export default function CollectData({ onNavigate }) {
   const [active, setActive]           = useState(false);
   const [fps, setFps]                 = useState(0);
   const [saveMsg, setSaveMsg]         = useState("");
-  const [trimLabel, setTrimLabel]     = useState("");   // label currently confirming delete
+  const [trimLabel, setTrimLabel]     = useState("");
   const [training, setTraining]       = useState(false);
   const [trainLog, setTrainLog]       = useState([]);
   const [showTrainLog, setShowTrainLog] = useState(false);
   const [restarting, setRestarting]   = useState(false);
+  const [qualityWarn, setQualityWarn] = useState("");   // recording quality warning
+  const noHandFramesRef = useRef(0);
   const trainLogRef = useRef(null);
 
   const [customWordSigns, setCustomWordSigns] = useState(loadCustomWordLabels);
@@ -99,6 +101,7 @@ export default function CollectData({ onNavigate }) {
   const [motionFps, setMotionFps]           = useState(0);
   const [motionActive, setMotionActive]     = useState(false);
   const [selectedSign, setSelectedSign]     = useState("");       // currently targeted label
+  const selectedSignRef = useRef("");
   const [autoAdvance, setAutoAdvance]       = useState(true);     // auto-save + loop
   const [autoReps, setAutoReps]             = useState(5);        // sequences per burst
   const [autoDone, setAutoDone]             = useState(0);        // completed this burst
@@ -111,18 +114,47 @@ export default function CollectData({ onNavigate }) {
   const motionLogRef = useRef(null);
   const autoRunningRef = useRef(false);
 
+  // Training result data (per-class accuracy + confusion matrix)
+  const [trainResult, setTrainResult]             = useState(null); // { accuracy, per_class, confusions }
+  const [motionTrainResult, setMotionTrainResult] = useState(null);
+  const [showTrainResult, setShowTrainResult]           = useState(false);
+  const [showMotionTrainResult, setShowMotionTrainResult] = useState(false);
+
   // ── Static WS ─────────────────────────────────────────────────────────────
   const { connected, connect, disconnect, send, onMessageRef } = useWebSocket(WS_URL);
   onMessageRef.current = (msg) => {
     if (msg.frame)                       setFrame(msg.frame);
-    if (msg.num_hands !== undefined)     setNumHands(msg.num_hands);
+    if (msg.num_hands !== undefined) {
+      setNumHands(msg.num_hands);
+      // Track zero-hand frames during recording for quality warning
+      if (recording) {
+        if (msg.num_hands === 0) {
+          noHandFramesRef.current += 1;
+        } else {
+          noHandFramesRef.current = 0;
+        }
+        if (noHandFramesRef.current > 20) {
+          setQualityWarn("Hand not visible — samples may be low quality");
+        } else {
+          setQualityWarn("");
+        }
+      }
+    }
     if (msg.fps !== undefined)           setFps(msg.fps);
     if (msg.sample_count !== undefined)  setSampleCount(msg.sample_count);
     if (msg.total_samples !== undefined) setTotalSamples(msg.total_samples);
     if (msg.class_stats)                 setClassStats(msg.class_stats);
     if (msg.saved) { setSaveMsg(`Saved ${msg.saved} samples → ${msg.path}`); setTimeout(()=>setSaveMsg(""),3000); }
-    if (msg.train_start) { setTraining(true); setTrainLog([]); setShowTrainLog(true); }
-    if (msg.train_log) { setTrainLog(p=>[...p,msg.train_log]); setShowTrainLog(true); setTimeout(()=>{ if(trainLogRef.current) trainLogRef.current.scrollTop=trainLogRef.current.scrollHeight; },30); }
+    if (msg.train_start) { setTraining(true); setTrainLog([]); setShowTrainLog(true); setTrainResult(null); setShowTrainResult(false); }
+    if (msg.train_log) {
+      const line = msg.train_log;
+      if (line.startsWith("TRAIN_RESULT:")) {
+        try { setTrainResult(JSON.parse(line.slice(13))); setShowTrainResult(true); } catch {}
+      } else {
+        setTrainLog(p=>[...p,line]); setShowTrainLog(true);
+        setTimeout(()=>{ if(trainLogRef.current) trainLogRef.current.scrollTop=trainLogRef.current.scrollHeight; },30);
+      }
+    }
     if (msg.train_done) setTraining(false);
     if (msg.trimmed) { setSaveMsg(`Deleted all ${msg.label} samples from CSV`); setTimeout(()=>setSaveMsg(""),3000); }
   };
@@ -139,8 +171,8 @@ export default function CollectData({ onNavigate }) {
     if (active) { send({ action:"stop_recording" }); disconnect(); setActive(false); setFrame(null); setRecording(false); }
     else { connect(); setActive(true); }
   };
-  const startRecording = (label) => { if (!connected) return; setCurrentLabel(label); setSampleCount(0); setRecording(true); send({ action:"start_recording", label }); };
-  const stopRecording  = () => { if (!connected) return; setRecording(false); send({ action:"stop_recording" }); };
+  const startRecording = (label) => { if (!connected) return; setCurrentLabel(label); setSampleCount(0); setRecording(true); noHandFramesRef.current = 0; setQualityWarn(""); send({ action:"start_recording", label }); };
+  const stopRecording  = () => { if (!connected) return; setRecording(false); noHandFramesRef.current = 0; setQualityWarn(""); send({ action:"stop_recording" }); };
   const handleSave     = () => { if (connected) send({ action:"save" }); };
   const handleTrimLabel = (label) => { if (connected) { send({ action:"trim_label", label }); setTrimLabel(""); } };
   const handleTrain    = () => { if (connected && !training) send({ action:"train" }); };
@@ -175,40 +207,52 @@ export default function CollectData({ onNavigate }) {
       setLastSaved({ label:msg.label, count:msg.count });
       setAutoDone(d => {
         const next = d + 1;
-        // if auto-advance and still have reps, trigger next recording after short delay
         if (autoRunningRef.current && next < autoRepsRef.current) {
+          // keep going — start next recording after short pause
           setTimeout(() => { if (autoRunningRef.current) motionSend({ action:"start_recording" }); }, 600);
         } else if (autoRunningRef.current) {
+          // burst complete
           autoRunningRef.current = false;
           setAutoRunning(false);
+          setSelectedSign("");
         }
         return next;
       });
-      setSelectedSign("");
       setTimeout(() => setLastSaved(null), 2500);
     }
     if (msg.trimmed_motion) { setLastSaved({ label:msg.label, count:0, deleted:true }); setMotionTrimLabel(""); setTimeout(()=>setLastSaved(null),2500); }
-    if (msg.train_start) { setMotionTraining(true); setMotionTrainLog([]); setShowMotionLog(true); }
-    if (msg.train_log)   { setMotionTrainLog(p=>[...p,msg.train_log]); setTimeout(()=>{ if(motionLogRef.current) motionLogRef.current.scrollTop=motionLogRef.current.scrollHeight; },30); }
+    if (msg.train_start) { setMotionTraining(true); setMotionTrainLog([]); setShowMotionLog(true); setMotionTrainResult(null); setShowMotionTrainResult(false); }
+    if (msg.train_log) {
+      const line = msg.train_log;
+      if (line.startsWith("TRAIN_RESULT:")) {
+        try { setMotionTrainResult(JSON.parse(line.slice(13))); setShowMotionTrainResult(true); } catch {}
+      } else {
+        setMotionTrainLog(p=>[...p,line]);
+        setTimeout(()=>{ if(motionLogRef.current) motionLogRef.current.scrollTop=motionLogRef.current.scrollHeight; },30);
+      }
+    }
     if (msg.train_done)  setMotionTraining(false);
   };
 
   // keep refs in sync so the closure above can read latest values
   const autoRepsRef = useRef(autoReps);
   useEffect(() => { autoRepsRef.current = autoReps; }, [autoReps]);
+  useEffect(() => { selectedSignRef.current = selectedSign; }, [selectedSign]);
 
   const handleMotionToggle = () => {
     if (motionActive) {
       autoRunningRef.current = false; setAutoRunning(false);
       motionSend({ action:"stop_recording" });
       motionDisconnect(); setMotionActive(false); setMotionFrame(null);
-      setMotionState("idle"); setHasPending(false);
+      setMotionState("idle"); setHasPending(false); setMotionProgress(0); setSelectedSign("");
     } else { motionConnect(); setMotionActive(true); }
   };
 
   const handleTabChange = (newTab) => {
-    if (newTab === "motion" && active) { send({ action:"stop_recording" }); disconnect(); setActive(false); setFrame(null); setRecording(false); }
-    if (newTab !== "motion" && motionActive) { autoRunningRef.current=false; setAutoRunning(false); motionSend({ action:"stop_recording" }); motionDisconnect(); setMotionActive(false); setMotionFrame(null); setMotionState("idle"); setHasPending(false); }
+    if (newTab === "motion" && active) { send({ action:"stop_recording" }); disconnect(); setActive(false); setFrame(null); setRecording(false); setCurrentLabel(""); }
+    if (newTab !== "motion" && motionActive) { autoRunningRef.current=false; setAutoRunning(false); motionSend({ action:"stop_recording" }); motionDisconnect(); setMotionActive(false); setMotionFrame(null); setMotionState("idle"); setHasPending(false); setMotionProgress(0); }
+    if (newTab !== "motion") setSelectedSign("");
+    if (newTab === "motion") { setCurrentLabel(""); setRecording(false); }
     setTab(newTab);
   };
 
@@ -230,10 +274,10 @@ export default function CollectData({ onNavigate }) {
   // When a sequence is done and auto-advance is on, auto-save with selected label
   useEffect(() => {
     if (!autoRunningRef.current) return;
-    if (motionState === "done" && hasPending && selectedSign) {
-      motionSend({ action:"label_sequence", label:selectedSign });
+    if (motionState === "done" && hasPending && selectedSignRef.current) {
+      motionSend({ action:"label_sequence", label:selectedSignRef.current });
     }
-  }, [motionState, hasPending, selectedSign]);
+  }, [motionState, hasPending]);
 
   const startMotionRec = () => motionSend({ action:"start_recording" });
   const stopMotionRec  = () => motionSend({ action:"stop_recording" });
@@ -256,12 +300,17 @@ export default function CollectData({ onNavigate }) {
       {/* Header */}
       <header style={s.header}>
         <div style={s.hLeft}>
-          <div style={s.logoMark}>N</div>
+          <img src="/logo192.png" alt="NeuroSign" style={s.logoMark} />
           <span style={s.logoText}>NeuroSign</span>
           <span style={s.sep}>·</span>
           <span style={s.pageTitle}>Collect Data</span>
         </div>
         <div style={s.hRight}>
+          <button style={s.backBtn} onClick={() => {
+            if (active) { send({ action:"stop_recording" }); disconnect(); }
+            if (motionActive) { motionSend({ action:"stop_recording" }); motionDisconnect(); }
+            onNavigate?.("home");
+          }}>← Back</button>
           {tab !== "motion" && active   && <FpsTag fps={fps} />}
           {tab === "motion" && motionActive && <FpsTag fps={motionFps} />}
           <StatusDot on={(tab==="motion" ? motionConnected : connected)} />
@@ -306,6 +355,11 @@ export default function CollectData({ onNavigate }) {
                     {recording ? "■ Stop" : "● Record"}
                   </button>
                 </div>
+                {qualityWarn && (
+                  <div style={{ ...s.warnMsg, display:"flex", alignItems:"center", gap:6 }}>
+                    ⚠ {qualityWarn}
+                  </div>
+                )}
               </div>
 
               {/* Stats + save */}
@@ -328,6 +382,9 @@ export default function CollectData({ onNavigate }) {
                 {training && <div style={s.warnMsg}>Training in progress — don't close the server.</div>}
                 {showTrainLog && trainLog.length > 0 && (
                   <TrainLog lines={trainLog} done={!training} onClose={()=>setShowTrainLog(false)} ref={trainLogRef} />
+                )}
+                {showTrainResult && trainResult && (
+                  <TrainResult result={trainResult} onClose={()=>setShowTrainResult(false)} />
                 )}
               </div>
             </>
@@ -446,6 +503,9 @@ export default function CollectData({ onNavigate }) {
                 {showMotionLog && motionTrainLog.length > 0 && (
                   <TrainLog lines={motionTrainLog} done={!motionTraining} onClose={()=>setShowMotionLog(false)} ref={motionLogRef} />
                 )}
+                {showMotionTrainResult && motionTrainResult && (
+                  <TrainResult result={motionTrainResult} onClose={()=>setShowMotionTrainResult(false)} />
+                )}
               </div>
             </>
           )}
@@ -480,10 +540,14 @@ export default function CollectData({ onNavigate }) {
                   <div key={label} style={s.signCell}>
                     <button
                       style={{ ...s.signBtn, ...(isActive ? s.signBtnActive : {}), ...(count>=STATIC_TARGET ? s.signBtnDone : {}) }}
-                      onClick={()=>{ setCurrentLabel(label); if(recording) send({ action:"stop_recording" }); setRecording(false); setTrimLabel(""); }}
+                      onClick={()=>{ 
+                        if (recording) { send({ action:"stop_recording" }); setRecording(false); }
+                        setCurrentLabel(isActive ? "" : label);
+                        setTrimLabel(""); 
+                      }}
                       disabled={!connected}>
                       <span style={s.signLabel}>{fmt(label)}</span>
-                      <div style={s.bar}><div style={{ ...s.barFill, width:`${pct*100}%`, background:count>=STATIC_TARGET?"#2e7d32":"#1a1a1a" }} /></div>
+                      <div style={s.bar}><div style={{ ...s.barFill, width:`${pct*100}%`, background:count>=STATIC_TARGET?"#2e7d32":"#6b7280" }} /></div>
                       <span style={s.signCount}>{count}</span>
                     </button>
                     {/* Delete button — appears on hover via state */}
@@ -516,7 +580,7 @@ export default function CollectData({ onNavigate }) {
                       style={{ ...s.signBtn, ...(isSel ? s.signBtnActive : {}), ...(count>=MOTION_TARGET ? s.signBtnDone : {}) }}
                       onClick={()=>setSelectedSign(isSel ? "" : key)}>
                       <span style={s.signLabel}>{label}</span>
-                      <div style={s.bar}><div style={{ ...s.barFill, width:`${pct*100}%`, background:count>=MOTION_TARGET?"#2e7d32":"#1a1a1a" }} /></div>
+                      <div style={s.bar}><div style={{ ...s.barFill, width:`${pct*100}%`, background:count>=MOTION_TARGET?"#2e7d32":"#6b7280" }} /></div>
                       <span style={s.signCount}>{count}/{MOTION_TARGET}</span>
                     </button>
                     {!isTrim
@@ -617,6 +681,78 @@ function TrainLog({ lines, done, onClose, ref: logRef }) {
   );
 }
 
+function TrainResult({ result, onClose }) {
+  const { accuracy, per_class = {}, confusions = [] } = result;
+  const classes = Object.keys(per_class).sort();
+  const good  = c => per_class[c] >= 0.80;
+  const ok    = c => per_class[c] >= 0.60 && per_class[c] < 0.80;
+  const bad   = c => per_class[c] < 0.60;
+
+  return (
+    <div style={{ border:"1px solid #d4d4d0", overflow:"hidden", marginTop:2 }}>
+      {/* Header */}
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 12px", background:"#f0f0eb", borderBottom:"1px solid #d4d4d0" }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <span style={{ fontSize:11, fontWeight:600, color:"#555550", textTransform:"uppercase", letterSpacing:"0.06em" }}>
+            Training Results
+          </span>
+          <span style={{ fontSize:13, fontWeight:700, fontFamily:"'IBM Plex Mono', monospace", color: accuracy >= 0.80 ? "#2e7d32" : accuracy >= 0.60 ? "#b45309" : "#b91c1c" }}>
+            {Math.round(accuracy * 100)}% overall
+          </span>
+        </div>
+        <button style={{ background:"none", border:"none", fontSize:13, color:"#888880", cursor:"pointer" }} onClick={onClose}>✕</button>
+      </div>
+
+      <div style={{ padding:"12px 14px", background:"#ffffff", display:"flex", flexDirection:"column", gap:14 }}>
+
+        {/* Per-class accuracy bars */}
+        <div>
+          <div style={{ fontSize:10, fontWeight:600, letterSpacing:"0.08em", textTransform:"uppercase", color:"#888880", marginBottom:8 }}>Per-sign accuracy</div>
+          <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+            {classes.map(cls => {
+              const pct = Math.round((per_class[cls] || 0) * 100);
+              const label = cls.startsWith("[") ? cls.slice(1,-1).replace(/_/g," ") : cls;
+              const barColor = pct >= 80 ? "#2e7d32" : pct >= 60 ? "#b45309" : "#b91c1c";
+              return (
+                <div key={cls} style={{ display:"flex", alignItems:"center", gap:8 }}>
+                  <span style={{ fontSize:12, fontFamily:"'IBM Plex Mono', monospace", minWidth:64, color:"#1a1a1a" }}>{label}</span>
+                  <div style={{ flex:1, height:5, background:"#e5e5e0", overflow:"hidden" }}>
+                    <div style={{ height:"100%", width:`${pct}%`, background:barColor, transition:"width 0.4s ease" }} />
+                  </div>
+                  <span style={{ fontSize:11, fontFamily:"'IBM Plex Mono', monospace", minWidth:32, textAlign:"right", color:barColor }}>{pct}%</span>
+                  {pct < 60 && <span style={{ fontSize:10, color:"#b91c1c", fontWeight:600 }}>needs data</span>}
+                </div>
+              );
+            })}
+          </div>
+          {classes.filter(bad).length > 0 && (
+            <div style={{ marginTop:8, padding:"6px 10px", background:"#fef2f2", border:"1px solid #fca5a5", fontSize:11, color:"#b91c1c" }}>
+              Signs under 60%: {classes.filter(bad).map(c => c.startsWith("[") ? c.slice(1,-1).replace(/_/g," ") : c).join(", ")} — collect more samples to improve.
+            </div>
+          )}
+        </div>
+
+        {/* Confusion matrix (top errors only) */}
+        {confusions.length > 0 && (
+          <div>
+            <div style={{ fontSize:10, fontWeight:600, letterSpacing:"0.08em", textTransform:"uppercase", color:"#888880", marginBottom:8 }}>Top confusions</div>
+            <div style={{ display:"flex", flexDirection:"column", gap:3 }}>
+              {confusions.slice(0,8).map((cf, i) => (
+                <div key={i} style={{ display:"flex", alignItems:"center", gap:8, fontSize:12 }}>
+                  <span style={{ fontFamily:"'IBM Plex Mono', monospace", color:"#1a1a1a", minWidth:56 }}>{cf.true}</span>
+                  <span style={{ color:"#888880" }}>mistaken for</span>
+                  <span style={{ fontFamily:"'IBM Plex Mono', monospace", color:"#b91c1c", minWidth:56 }}>{cf.pred}</span>
+                  <span style={{ fontSize:11, color:"#888880", marginLeft:"auto" }}>{cf.count}x</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const C = {
   bg:"#f5f5f0", surface:"#ffffff", border:"#d4d4d0",
   text:"#1a1a1a", textMid:"#555550", textDim:"#888880",
@@ -626,10 +762,11 @@ const s = {
   header: { background:C.surface, borderBottom:`1px solid ${C.border}`, padding:"0 28px", height:52, display:"flex", alignItems:"center", justifyContent:"space-between", gap:16 },
   hLeft: { display:"flex", alignItems:"center", gap:10 },
   hRight: { display:"flex", alignItems:"center", gap:10 },
-  logoMark: { width:24, height:24, background:C.text, color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:12, fontWeight:700, flexShrink:0 },
+  logoMark: { width:28, height:28, borderRadius:6, objectFit:"cover", flexShrink:0 },
   logoText: { fontSize:15, fontWeight:700, letterSpacing:"-0.02em", color:C.text },
   sep: { fontSize:16, color:C.textDim },
   pageTitle: { fontSize:14, fontWeight:500, color:C.textMid },
+  backBtn: { padding:"6px 14px", background:"none", border:`1px solid ${C.border}`, fontSize:13, fontWeight:500, color:C.textMid, cursor:"pointer" },
   fpsTag: { padding:"3px 9px", background:"#f0f0eb", border:`1px solid ${C.border}`, fontSize:12, fontFamily:"'IBM Plex Mono', monospace", color:C.textDim },
   body: { flex:1, display:"grid", gridTemplateColumns:"440px 1fr", gap:20, padding:"20px 28px 28px", maxWidth:1200, width:"100%", margin:"0 auto", alignItems:"start" },
   leftCol: { display:"flex", flexDirection:"column", gap:12 },
@@ -651,9 +788,9 @@ const s = {
   warnMsg: { fontSize:12, color:"#b45309", padding:"6px 10px", background:"#fffbeb", border:"1px solid #fcd34d" },
   helpText: { fontSize:12, color:C.textDim, lineHeight:1.5 },
   rightCol: { display:"flex", flexDirection:"column" },
-  tabs: { display:"flex", borderBottom:`1px solid ${C.border}`, marginBottom:12 },
-  tab: { padding:"8px 16px", background:"none", border:"none", borderBottom:"2px solid transparent", fontSize:13, fontWeight:500, color:C.textMid, marginBottom:-1, cursor:"pointer" },
-  tabActive: { borderBottomColor:C.text, color:C.text, fontWeight:600 },
+  tabs: { display:"flex", borderBottom:`1px solid ${C.border}`, marginBottom:12, gap:0 },
+  tab: { padding:"8px 16px", background:"none", border:"none", borderBottom:"2px solid transparent", fontSize:13, fontWeight:500, color:C.textMid, cursor:"pointer", position:"relative", bottom:"-1px" },
+  tabActive: { borderBottom:`2px solid ${C.text}`, color:C.text, fontWeight:600 },
   grid: { display:"grid", gridTemplateColumns:"repeat(auto-fill, minmax(100px, 1fr))", gap:4 },
   signCell: { position:"relative", display:"flex", flexDirection:"column" },
   signBtn: { padding:"10px 8px 8px", border:`1px solid ${C.border}`, background:C.surface, display:"flex", flexDirection:"column", alignItems:"center", gap:4, cursor:"pointer", width:"100%" },
